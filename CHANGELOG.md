@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/yildirimarda/agentloop/compare/v0.1.0...v0.1.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* set git identity in test suite so CI runners can commit ([2ed4a19](https://github.com/yildirimarda/agentloop/commit/2ed4a1900443706b59d08b486720b6443c005ba5))
+
 ## 0.1.0 (2026-08-23)
 
 Initial release.
