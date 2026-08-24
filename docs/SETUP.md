@@ -250,7 +250,7 @@ is about what you *commit* first, not what you copy):
 
 ```
 $ cd /path/to/your/repo
-$ curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash
+$ curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh | bash
     # or, from a local clone (works for private repos):
 $ /path/to/agentloop/install.sh .
     # pin a release:  ... | bash -s -- --ref v0.1.0
@@ -569,9 +569,10 @@ not before, so you're not fighting your own branch protection while pushing
 config.
 
 Two ways to run it. **Container route (no host gh login needed):** create a
-short-lived fine-grained admin token — Repository access: this repo only,
-Permissions: **Administration: Read and write** + **Issues: Read and write** —
-store it and run:
+fine-grained admin token — Repository access: your agentloop repos (reusable
+across projects, or create-and-delete per setup since it's needed for thirty
+seconds), Permissions: **Administration: Read and write** + **Issues: Read and
+write** — store it and run:
 
 ```
 $ security add-generic-password -s gh-admin -a "$USER" -w 'github_pat_...'
@@ -615,6 +616,12 @@ human. If you'd rather approve each PR, set
 loop stalls on every item waiting for you, which defeats the purpose.
 
 ### 4.2 Create the agent's token
+
+**One token serves every agentloop project.** Fine-grained PATs can be scoped
+to a *list* of repositories, so on each new project you don't create a new
+token — you open the existing one (github.com/settings/personal-access-tokens
+→ Repository access) and add the repo to its list. The keychain entry stays
+untouched. Only do the steps below the very first time.
 
 Go to **github.com/settings/personal-access-tokens/new** and set:
 

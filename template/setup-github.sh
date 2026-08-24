@@ -66,9 +66,14 @@ cat <<'EOF'
 ========================================================
 Done. Two manual steps remain:
 
-1) Create a fine-grained token for the agent:
-   github.com/settings/personal-access-tokens/new
-     · Repository access -> Only select repositories -> this repo
+1) Give the agent token access to this repo.
+   ONE token serves all your agentloop projects — if you already have it,
+   just add this repo to its list:
+     github.com/settings/personal-access-tokens
+       -> your agent token -> Repository access -> add this repo
+   Creating it for the first time:
+     github.com/settings/personal-access-tokens/new
+     · Repository access -> Only select repositories -> your agentloop repos
      · Permissions -> Contents: Read and write
      · Permissions -> Pull requests: Read and write
      · Permissions -> Checks: Read-only          (CI verdict polling)
