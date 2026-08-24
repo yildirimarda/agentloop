@@ -3,7 +3,7 @@
 # agentloop installer — copies the autonomous development loop into a project.
 #
 #   Local clone:   /path/to/agentloop/install.sh [target-dir] [options]
-#   One-liner:     curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash -s -- [options]
+#   One-liner:     curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh | bash -s -- [options]
 #
 # Options
 #   --ref REF            install a specific tag or branch (default: newest
@@ -41,7 +41,7 @@
 #
 set -euo pipefail
 
-DEFAULT_REPO="https://github.com/yildirimarda/agentloop.git"
+DEFAULT_REPO="https://github.com/CHANGE_ME/agentloop.git"
 REPO="${AGENTLOOP_REPO:-$DEFAULT_REPO}"
 REF=""
 TARGET=""
@@ -76,7 +76,12 @@ die()  { echo "error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
 warn() { echo "  ⚠ $*"; }
 
-usage() { sed -n '2,42p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || echo "agentloop installer — see the repository README."; }
+# Print the header comment block (everything from line 2 up to the first
+# non-comment line) — no fixed line range to fall out of sync with.
+usage() {
+  awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0" 2>/dev/null \
+    || echo "agentloop installer — see the repository README."
+}
 
 filehash() {
   if command -v md5sum >/dev/null 2>&1; then md5sum < "$1" | cut -d' ' -f1

@@ -324,6 +324,10 @@ JOBS
 
 **Verify:** the last line says `completed with 'success'`.
 
+**Brand-new empty repo?** The python steps detect that there's no
+`pyproject.toml` yet and skip themselves, so the job is green by design. Real
+checks kick in automatically once the `--init` PR lands the scaffolding.
+
 ### 1.4 Why this phase exists
 
 If your existing code doesn't pass its own lint and tests, you need to know
@@ -664,6 +668,10 @@ Skip this and `automerge.yml` silently does nothing. Every PR just sits there
 green and unmerged, with no error anywhere — a genuinely confusing failure.
 
 ### 4.4 Verify
+
+These verification commands use host gh for convenience — if you don't keep a
+host gh login, check the same things in the repo's Settings → Branches and
+Settings → General pages instead.
 
 ```
 $ gh api repos/:owner/:repo/branches/main/protection \

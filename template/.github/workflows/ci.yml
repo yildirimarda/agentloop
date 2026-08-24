@@ -22,20 +22,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── Python: only runs once a pyproject.toml exists ─────────────────────
+      # On a brand-new repo the agent's --init PR creates the scaffolding;
+      # until then these steps skip and the job stays green, so branch
+      # protection has a passing "ci" check from day one.
+      - name: Detect python project
+        id: py
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "no pyproject.toml yet — python steps skipped"
+          fi
+
       - uses: astral-sh/setup-uv@v5
+        if: steps.py.outputs.found == 'true'
         with:
           enable-cache: true
 
       - name: Install dependencies
+        if: steps.py.outputs.found == 'true'
         run: uv sync --all-extras --dev
 
       - name: Lint
+        if: steps.py.outputs.found == 'true'
         run: uv run ruff check .
 
       - name: Format check
+        if: steps.py.outputs.found == 'true'
         run: uv run ruff format --check .
 
       - name: Tests
+        if: steps.py.outputs.found == 'true'
         run: uv run pytest -q
 
       # ── Terraform: only runs if the repo actually contains .tf files ──────
