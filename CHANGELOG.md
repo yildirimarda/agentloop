@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/yildirimarda/agentloop/compare/v0.1.2...v0.1.3) (2026-08-24)
+
+
+### Bug Fixes
+
+* restore personalized repo URLs and correct installed-files tree in docs ([e72f2fc](https://github.com/yildirimarda/agentloop/commit/e72f2fce8ed1db307b7071cf7eb031452ab7c169))
+
 ## [0.1.2](https://github.com/yildirimarda/agentloop/compare/v0.1.1...v0.1.2) (2026-08-24)
 
 
