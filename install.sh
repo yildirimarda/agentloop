@@ -3,7 +3,7 @@
 # agentloop installer — copies the autonomous development loop into a project.
 #
 #   Local clone:   /path/to/agentloop/install.sh [target-dir] [options]
-#   One-liner:     curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh | bash -s -- [options]
+#   One-liner:     curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash -s -- [options]
 #
 # Options
 #   --ref REF            install a specific tag or branch (default: newest
@@ -41,7 +41,7 @@
 #
 set -euo pipefail
 
-DEFAULT_REPO="https://github.com/CHANGE_ME/agentloop.git"
+DEFAULT_REPO="https://github.com/yildirimarda/agentloop.git"
 REPO="${AGENTLOOP_REPO:-$DEFAULT_REPO}"
 REF=""
 TARGET=""

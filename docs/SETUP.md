@@ -108,7 +108,7 @@ repo/
 ├── Dockerfile.agent               the agent's container (both engines inside)
 ├── run.sh                         the single entry point (--engine picks one)
 ├── setup-github.sh                one-time GitHub configuration
-├── SETUP.md                       this file
+├── .agentloop                     version stamp written by the installer
 └── .github/workflows/
     ├── ci.yml                     lint + tests, the required status check
     ├── automerge.yml              merges green "automated" PRs
@@ -250,7 +250,7 @@ is about what you *commit* first, not what you copy):
 
 ```
 $ cd /path/to/your/repo
-$ curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh | bash
+$ curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash
     # or, from a local clone (works for private repos):
 $ /path/to/agentloop/install.sh .
     # pin a release:  ... | bash -s -- --ref v0.1.0
