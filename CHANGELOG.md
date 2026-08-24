@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/yildirimarda/agentloop/compare/v0.1.1...v0.1.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* keep installer help in sync and make template CI green on empty repos ([bc2646f](https://github.com/yildirimarda/agentloop/commit/bc2646fb1c15555d5f289673c94b5a92fb2bdd2c))
+
 ## [0.1.1](https://github.com/yildirimarda/agentloop/compare/v0.1.0...v0.1.1) (2026-08-24)
 
 
