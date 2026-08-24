@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # IMPORTANT: the job is named "ci" — setup-github.sh registers this exact
+  # name as the required status check. If you rename it, re-run the setup
+  # script with CHECK=<new-name> ./setup-github.sh, otherwise branch
+  # protection waits on a check that never reports and nothing ever merges.
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Tests
+        run: uv run pytest -q
+
+      # ── Terraform: only runs if the repo actually contains .tf files ──────
+      - name: Detect terraform
+        id: tf
+        run: |
+          if find . -name '*.tf' -not -path './.git/*' | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.tf.outputs.found == 'true'
+
+      - name: Terraform validate
+        if: steps.tf.outputs.found == 'true'
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false
+          terraform validate
+
+      # ── Uncomment if you need Java/Spark in CI ───────────────────────────
+      # - uses: actions/setup-java@v4
+      #   with:
+      #     distribution: temurin
+      #     java-version: '17'

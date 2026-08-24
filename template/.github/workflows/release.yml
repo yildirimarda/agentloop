@@ -1,0 +1,42 @@
+# Automatic version bump + CHANGELOG + tag + release, driven by
+# Conventional Commits.
+#
+# How it works: after every merge to main it opens a "release PR" built from
+# the accumulated commits. Merging that PR creates the tag and the GitHub
+# release.
+#
+# If you want this fully hands-off, uncomment the second job below. Leaving
+# the version bump to a human review is usually a healthy brake, though.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.rp.outputs.pr }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          # Match your project: python | node | simple | terraform-module ...
+          release-type: python
+
+  # ── Auto-merge the release PR too ────────────────────────────────────────
+  # automerge-release:
+  #   needs: release-please
+  #   if: needs.release-please.outputs.pr != ''
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - run: gh pr merge --auto --squash "${{ fromJSON(needs.release-please.outputs.pr).number }}" --repo "$REPO"
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         REPO: ${{ github.repository }}

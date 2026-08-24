@@ -1,0 +1,26 @@
+# Versioned releases from Conventional Commits.
+#
+# release-please opens a release PR after merges to main; merging that PR
+# creates the tag (vX.Y.Z) and the GitHub release. Projects pin a version
+# with:  install.sh --ref vX.Y.Z
+#
+# release-type "simple" manages version.txt and CHANGELOG.md — never edit
+# those two by hand.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: simple

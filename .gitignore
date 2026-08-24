@@ -1,0 +1,6 @@
+.DS_Store
+logs/
+graphify-out/
+.opencode/
+*.agentloop-new
+.agentloop

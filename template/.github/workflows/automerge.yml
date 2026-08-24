@@ -1,0 +1,33 @@
+# Puts PRs the agent opened with the "automated" label into the auto-merge
+# queue. Once CI is green, GitHub merges them itself — the agent never has to
+# wait around burning API requests.
+#
+# Two labels opt out:
+#   blocked — the agent reported it got stuck, so a human should look
+#   plan    — a change to PLAN.md, which is the one thing worth reviewing
+#             yourself. A bad plan turns into twenty bad pull requests.
+
+name: automerge
+
+on:
+  pull_request:
+    types: [opened, labeled, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'automated') &&
+      !contains(github.event.pull_request.labels.*.name, 'blocked') &&
+      !contains(github.event.pull_request.labels.*.name, 'plan')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR" --repo "$REPO"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
