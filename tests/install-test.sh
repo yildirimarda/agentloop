@@ -7,6 +7,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# The suite creates throwaway repos and commits in them. CI runners have no
+# git identity configured, so carry one via environment — repo- and
+# machine-config independent, and it never touches the runner's global config.
+export GIT_AUTHOR_NAME="agentloop-test"  GIT_AUTHOR_EMAIL="test@agentloop.local"
+export GIT_COMMITTER_NAME="agentloop-test" GIT_COMMITTER_EMAIL="test@agentloop.local"
+
 cd "$TMP"
 git init -q proj
 cd proj
