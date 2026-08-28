@@ -256,25 +256,35 @@ made_commits() { git log --oneline origin/main..HEAD 2>/dev/null | grep -q .; }
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
 
 # Poll until the PR merges, CI fails, or we time out. No agent turns, no
-# tokens burned — one containerized gh call per poll, state and CI verdict in
-# a single query.
+# tokens burned — containerized gh calls only.
+#
+# CI verdict comes from the Actions API (workflow runs for the PR's head
+# commit), NOT from check runs: GitHub does not offer the "Checks" permission
+# on fine-grained PATs, so check-run data is invisible to the agent token.
+# Workflow runs are readable with "Actions: Read-only".
 wait_for_merge() {
   local pr="$1" deadline=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
   echo "> waiting for PR #$pr to merge (timeout ${TIMEOUT_MIN}m)"
   while (( $(date +%s) < deadline )); do
-    local out state fails
-    out="$(gh_c pr view "$pr" --json state,statusCheckRollup \
-      -q '[.state, ([.statusCheckRollup[]? | select(.conclusion=="FAILURE" or .conclusion=="TIMED_OUT" or .conclusion=="CANCELLED")] | length | tostring)] | join(" ")' \
-      2>/dev/null || true)"
+    local out state head fails
+    out="$(gh_c pr view "$pr" --json state,headRefOid \
+          -q '[.state, .headRefOid] | join(" ")' 2>/dev/null || true)"
     state="${out%% *}"
-    fails="${out##* }"
+    head="${out##* }"
     [[ -z "$state" ]] && state="UNKNOWN"
-    [[ "$fails" == "$state" || -z "$fails" ]] && fails=0
     case "$state" in
       MERGED) info "merged"; return 0 ;;
       CLOSED) info "PR was closed without merging"; return 2 ;;
     esac
-    if [[ "$fails" -gt 0 ]] 2>/dev/null; then info "CI failed on PR #$pr"; return 3; fi
+    if [[ -n "$head" && "$head" != "$state" ]]; then
+      fails="$(gh_c api "repos/{owner}/{repo}/actions/runs?head_sha=$head&per_page=30" \
+        --jq '[.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")] | length' \
+        2>/dev/null || echo 0)"
+      if [[ "${fails:-0}" -gt 0 ]] 2>/dev/null; then
+        info "CI failed on PR #$pr"
+        return 3
+      fi
+    fi
     sleep 20
   done
   info "timed out waiting for PR #$pr"

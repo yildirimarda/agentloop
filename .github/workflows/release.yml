@@ -1,5 +1,11 @@
 # Versioned releases from Conventional Commits.
 #
+# REQUIRED REPO SETTING — without it this workflow fails on its first run
+# with "GitHub Actions is not permitted to create or approve pull requests":
+#   Settings -> Actions -> General -> Workflow permissions
+#     -> Read and write permissions
+#     -> [x] Allow GitHub Actions to create and approve pull requests
+#
 # release-please opens a release PR after merges to main; merging that PR
 # creates the tag (vX.Y.Z) and the GitHub release. Projects pin a version
 # with:  install.sh --ref vX.Y.Z

@@ -1,6 +1,12 @@
 # Automatic version bump + CHANGELOG + tag + release, driven by
 # Conventional Commits.
 #
+# REQUIRED REPO SETTING — without it this workflow fails on its first run
+# with "GitHub Actions is not permitted to create or approve pull requests":
+#   Settings -> Actions -> General -> Workflow permissions
+#     -> Read and write permissions
+#     -> [x] Allow GitHub Actions to create and approve pull requests
+#
 # How it works: after every merge to main it opens a "release PR" built from
 # the accumulated commits. Merging that PR creates the tag and the GitHub
 # release.

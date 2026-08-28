@@ -22,11 +22,18 @@ CHECK="${CHECK:-}"       # empty = auto-detect from the checks that ran on main
 # Branch protection that requires a check which never reports = nothing ever
 # merges, silently. So instead of guessing, ask GitHub which checks actually
 # ran on main and validate/auto-detect against that list.
+#
+# Source: Actions job names via the workflow-runs API (a job's name IS its
+# status-check context). Not the check-runs API — fine-grained PATs have no
+# "Checks" permission, but "Actions: Read-only" covers this.
 detect_checks() {
-  local sha
-  sha="$(gh api "repos/$REPO/branches/main" --jq .commit.sha 2>/dev/null)" || return 0
-  gh api "repos/$REPO/commits/$sha/check-runs" --paginate \
-    --jq '.check_runs[].name' 2>/dev/null | sort -u
+  gh api "repos/$REPO/actions/runs?branch=main&per_page=10" \
+      --jq '.workflow_runs[].id' 2>/dev/null \
+    | head -5 \
+    | while read -r run_id; do
+        gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+          --jq '.jobs[].name' 2>/dev/null || true
+      done | sort -u
 }
 NAMES="$(detect_checks || true)"
 
@@ -113,8 +120,8 @@ Done. Two manual steps remain:
      · Repository access -> Only select repositories -> your agentloop repos
      · Permissions -> Contents: Read and write
      · Permissions -> Pull requests: Read and write
-     · Permissions -> Checks: Read-only          (CI verdict polling)
-     · Permissions -> Commit statuses: Read-only (CI verdict polling)
+     · Permissions -> Actions: Read-only   (CI verdict polling — note:
+       GitHub offers no "Checks" permission on fine-grained PATs)
      · Select NOTHING else (no admin, no org scopes)
 
    Then store it in the keychain:

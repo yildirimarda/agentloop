@@ -233,10 +233,13 @@ sk-or-v1-abc
 
 ## Phase 1 — CI baseline on main
 
-**Project already has CI?** Then this phase is just: make sure it's green on
-`main`. The installer never touches an existing `ci.yml` (it's authoritative),
-and `--github-setup` auto-detects your pipeline's check name from the runs on
-main — no renaming, no merging. Skip 1.1-1.3 and go fix any red checks instead.
+**Project already has CI?** Then this phase is just: confirm the *latest
+existing* run on `main` is green (Actions tab — this predates agentloop, since
+you haven't pushed anything yet). The installer never touches an existing
+`ci.yml` (it's authoritative), and `--github-setup` auto-detects your
+pipeline's check name from the runs on main — no renaming, no merging. If main
+is red, fix that first; then skip straight to Phase 2 and run the installer
+there (the install command below is repeated at 2.1).
 
 For projects without CI: install **only** `ci.yml` first and get it green
 before anything else touches this repo.
@@ -359,6 +362,13 @@ entirely avoidable by spending twenty minutes here.
 
 ### 2.1 Commit the rest
 
+**Skipped Phase 1's install because you already have CI?** Run the installer
+now — same command:
+
+```
+$ curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash
+```
+
 **Already had some of these files?** The installer never clobbers: an existing
 `CLAUDE.md` gets an appended `@AGENTS.md` import (your content stays),
 `.mcp.json` gains the graphify server next to your servers,
@@ -437,7 +447,22 @@ A filled-in example:
 Add anything project-specific the agent would otherwise have to guess. Keep it
 short — this text goes into every single prompt.
 
-### 2.4 Commit
+### 2.4 One web setting, THEN commit
+
+The files you're about to push include `release.yml`, which runs on every push
+to `main` and opens pull requests. GitHub blocks that by default, so its very
+first run fails with *"GitHub Actions is not permitted to create or approve
+pull requests"* unless you flip this setting first:
+
+Repo → **Settings → Actions → General → Workflow permissions**:
+
+- Select **Read and write permissions**
+- Check **Allow GitHub Actions to create and approve pull requests**
+- Save
+
+(`automerge.yml` needs the same setting — one visit covers both.)
+
+Now commit and push:
 
 ```
 $ git add -A
@@ -582,7 +607,8 @@ Two ways to run it. **Container route (no host gh login needed):** create a
 fine-grained admin token — Repository access: your agentloop repos (reusable
 across projects, or create-and-delete per setup since it's needed for thirty
 seconds), Permissions: **Administration: Read and write** + **Issues: Read and
-write** — store it and run:
+write** + **Actions: Read-only** (check-name auto-detection) — store it and
+run:
 
 ```
 $ security add-generic-password -s gh-admin -a "$USER" -w 'github_pat_...'
@@ -642,8 +668,7 @@ Go to **github.com/settings/personal-access-tokens/new** and set:
 | Repository access | **Only select repositories** → pick this one repo |
 | Permissions → Contents | **Read and write** |
 | Permissions → Pull requests | **Read and write** |
-| Permissions → Checks | **Read-only** — lets the loop's PR polling see the CI verdict |
-| Permissions → Commit statuses | **Read-only** — same reason |
+| Permissions → Actions | **Read-only** — lets the loop's PR polling read the CI verdict via workflow runs. (You won't find a "Checks" permission: GitHub doesn't offer it on fine-grained PATs, which is why the loop reads the Actions API instead.) |
 | Everything else | leave alone |
 
 Do **not** grant: Administration, Actions, Workflows, Secrets, or any
@@ -662,6 +687,10 @@ $ security add-generic-password -s gh-agent -a "$USER" -w 'github_pat_...'
 ```
 
 ### 4.3 Let Actions open and merge PRs
+
+You already did this in Phase 2.4 — this step is just the double-check,
+because forgetting it is the most confusing failure in the setup (PRs sit
+green and unmerged with no error anywhere).
 
 Repo → **Settings** → **Actions** → **General** → scroll to **Workflow
 permissions**:
