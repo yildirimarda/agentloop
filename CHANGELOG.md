@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/yildirimarda/agentloop/compare/v0.5.1...v0.6.0) (2026-08-28)
+
+
+### Features
+
+* support multiple required status checks (comma-separated CHECK) ([09ead3c](https://github.com/yildirimarda/agentloop/commit/09ead3c7d925738f4a350b44e66c9c0e554307ca))
+
 ## [0.5.1](https://github.com/yildirimarda/agentloop/compare/v0.5.0...v0.5.1) (2026-08-28)
 
 
