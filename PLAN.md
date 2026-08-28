@@ -16,7 +16,11 @@
 - [ ] Add Codex CLI as a third engine (--engine codex) implementing the documented contract, including its own guardrail config file in the template
 - [ ] Add per-engine smoke tests that validate the tool-usage jq parsers against recorded fixture logs
 
-## Milestone 3: Installer UX
+## Milestone 3: Loop UX
+
+- [ ] Add an --auto-replan option: when -n all exhausts the plan, run one replan session to propose the next wave of items, open the plan-labelled PR, and stop for human review
+
+## Milestone 4: Installer UX
 
 - [ ] Add install.sh --check: report installed version vs newest release tag without changing any files
 - [ ] Print a unified diff summary for every *.agentloop-new file at the end of an --update run

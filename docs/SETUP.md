@@ -753,6 +753,13 @@ Either write `PLAN.md` by hand — the template in the file shows the exact form
 $ ./run.sh --replan
 ```
 
+**Already have a roadmap in another format** — status tables, prose, bare `[x]`
+lines? The loop can only parse `- [ ]` checkbox lines; anything else is
+invisible to it (`./run.sh --next` will tell you when that's the case).
+`--replan` is also the converter: it rewrites the existing plan into the
+canonical format, preserving every item and its done/not-done status, via a
+`plan`-labelled PR you review before merging.
+
 ### 5.3 What you'll see
 
 ```

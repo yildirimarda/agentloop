@@ -132,6 +132,11 @@ if [[ "$MODE" == "next" ]]; then
   echo "done:      $(plan_done_count)"
   echo "remaining: $(plan_remaining)"
   echo "next:      ${n:-<nothing left>}"
+  if [[ "$(plan_done_count)" -eq 0 && "$(plan_remaining)" -eq 0 ]]; then
+    echo
+    echo "note: no '- [ ]' items found. If PLAN.md uses another format"
+    echo "(tables, prose, bare [x] lines), convert it:  ./run.sh --replan"
+  fi
   exit 0
 fi
 
@@ -381,8 +386,12 @@ features in this session.
 3. Add items that are clearly needed but missing.
 4. Split any remaining item that is too large for one pull request.
 5. Delete items that are no longer relevant, and say why in the commit message.
-6. Keep the format: "## Milestone N: name" headings, "- [ ]" / "- [x]" items,
-   and a "## Discovered" section at the end.
+6. Enforce the canonical format: "## Milestone N: name" headings,
+   "- [ ]" / "- [x]" items, and a "## Discovered" section at the end.
+   If PLAN.md is currently written in ANY other style — status tables, prose,
+   bare [x] lines, emoji markers — rewrite it into this format, preserving
+   every item's meaning and done/not-done status. The loop can only parse
+   "- [ ]" lines, so anything else is invisible to it.
 7. Commit with a message starting "chore: ", push, and open a PR with:
      gh pr create --fill --label plan
 8. Stop.
@@ -482,8 +491,21 @@ for (( i = 1; i <= COUNT; i++ )); do
 
   if [[ "$before_remaining" -eq 0 ]]; then
     echo
-    echo "PLAN.md is complete — nothing left to do."
-    echo "Add items yourself, or run:  ./run.sh --replan"
+    if [[ "$(plan_done_count)" -eq 0 ]]; then
+      # No unchecked AND no checked items: the file isn't empty of work,
+      # it's in a format the loop cannot parse.
+      echo "PLAN.md contains no '- [ ]' checklist items at all."
+      echo "If your plan is written in another style (status tables, prose,"
+      echo "bare [x] lines), the loop cannot see it. Convert it with:"
+      echo "  ./run.sh --replan"
+      echo "That mode rewrites the plan into the canonical format, preserving"
+      echo "every item and its status, via a 'plan'-labelled PR you review."
+    else
+      echo "PLAN.md is complete — nothing left to do."
+      echo "Have the agent propose the next wave:  ./run.sh --replan"
+      echo "(it audits the code, adds what's clearly missing, opens a plan PR"
+      echo "for your review) — or add items yourself."
+    fi
     break
   fi
 
