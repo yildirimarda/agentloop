@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/yildirimarda/agentloop/compare/v0.4.0...v0.5.0) (2026-08-28)
+
+
+### Features
+
+* let the agent propose CI changes via ci-proposals/ instead of touching workflows ([39b4591](https://github.com/yildirimarda/agentloop/commit/39b4591cbeb71078c471914bf88e98537eaa5250))
+
 ## [0.4.0](https://github.com/yildirimarda/agentloop/compare/v0.3.0...v0.4.0) (2026-08-28)
 
 
