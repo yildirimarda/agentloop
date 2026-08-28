@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/yildirimarda/agentloop/compare/v0.5.0...v0.5.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* read CI verdict via Actions API; document required Actions permissions and setup order ([26db55d](https://github.com/yildirimarda/agentloop/commit/26db55d671ba6cfb5f4b08eb478784864e6ca704))
+
 ## [0.5.0](https://github.com/yildirimarda/agentloop/compare/v0.4.0...v0.5.0) (2026-08-28)
 
 
