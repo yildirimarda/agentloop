@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/yildirimarda/agentloop/compare/v0.1.3...v0.2.0) (2026-08-28)
+
+
+### Features
+
+* detect non-checkbox plans, make --replan the format converter, guide next steps when plan completes ([5e3dd5e](https://github.com/yildirimarda/agentloop/commit/5e3dd5ec638277d04b7e4c690c45a7a15f758c77))
+
 ## [0.1.3](https://github.com/yildirimarda/agentloop/compare/v0.1.2...v0.1.3) (2026-08-24)
 
 
