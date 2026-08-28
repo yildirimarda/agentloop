@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/yildirimarda/agentloop/compare/v0.6.0...v0.6.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* pre-create volume mount points in agent image — fresh volumes were root-owned (EACCES) ([96cf3cf](https://github.com/yildirimarda/agentloop/commit/96cf3cf4659118a57480ecc388e3be7e64d6bfe0))
+
 ## [0.6.0](https://github.com/yildirimarda/agentloop/compare/v0.5.1...v0.6.0) (2026-08-28)
 
 
