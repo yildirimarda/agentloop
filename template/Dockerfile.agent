@@ -77,6 +77,12 @@ RUN useradd -m -s /bin/bash agent
 USER agent
 WORKDIR /work
 
+# Pre-create the volume mount points. A fresh named volume copies ownership
+# from the image path at first mount; if the path does not exist in the
+# image, Docker creates it root-owned and opencode/claude cannot write
+# their caches (EACCES on /home/agent/.cache).
+RUN mkdir -p /home/agent/.cache /home/agent/.claude
+
 # A git identity is REQUIRED — without it the agent cannot create commits.
 # The credential helper line makes `git push`/`git pull` over HTTPS work with
 # the GH_TOKEN env var (gh serves it as the credential). Without it, git in
