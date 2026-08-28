@@ -90,6 +90,21 @@ last index, so if you just created a file, the graph does not know about it yet.
 - Never commit secrets, tokens or `.env` contents.
 - When adding a new dependency, justify it in the PR description.
 
+## CI changes
+
+You cannot modify anything under `.github/workflows/` — it is denied by
+config, and GitHub rejects your token's pushes to that path anyway. But plan
+items about CI are legitimate. Handle them like this:
+
+1. Write the full proposed workflow file (or the diff) under
+   `ci-proposals/<short-name>.yml`. Files there are inert — GitHub only
+   executes workflows from `.github/workflows/`.
+2. In the PR description, explain what the change does and why, and include
+   the one command a human runs to apply it:
+   `git mv ci-proposals/<name>.yml .github/workflows/<name>.yml`
+3. Tick the plan item as done — proposing IS the deliverable for CI items.
+   A human applies it in a separate commit.
+
 ## When you get stuck
 
 If you cannot finish the item in 3 attempts, stop pushing on it. Commit what

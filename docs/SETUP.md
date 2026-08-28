@@ -1261,6 +1261,14 @@ genuinely need a model: writing code, and noticing what else the project needs.
 
 ## Notes
 
+**CI plan items work through proposals.** The agent can't touch
+`.github/workflows/` (denied by config, and its token lacks the Workflows
+permission, so GitHub rejects such pushes regardless). Plan items about CI are
+still fine: the agent writes the proposed workflow to `ci-proposals/<name>.yml`
+— inert by location — and the PR tells you the one `git mv` that applies it.
+Deliberate: an agent that can edit its own gate can learn to pass by weakening
+it.
+
 **Item quality is the whole game.** One PR per item, independently testable,
 ordered so each depends only on items above it, written as an instruction rather
 than a topic. "Add rate limiting to the login endpoint" finishes in 8 turns;
