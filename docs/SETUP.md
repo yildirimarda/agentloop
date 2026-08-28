@@ -233,7 +233,13 @@ sk-or-v1-abc
 
 ## Phase 1 — CI baseline on main
 
-Copy **only** `ci.yml` and get it green before anything else touches this repo.
+**Project already has CI?** Then this phase is just: make sure it's green on
+`main`. The installer never touches an existing `ci.yml` (it's authoritative),
+and `--github-setup` auto-detects your pipeline's check name from the runs on
+main — no renaming, no merging. Skip 1.1-1.3 and go fix any red checks instead.
+
+For projects without CI: install **only** `ci.yml` first and get it green
+before anything else touches this repo.
 
 ### 1.1 Install the files, commit only ci.yml
 
@@ -706,7 +712,7 @@ scoped and `opencode.json` denies `git push*main*`.
 |---|---|
 | `HTTP 403: Resource not accessible` | You lack admin on the repo, or you're on a free plan with a private repo (branch protection needs Pro or a public repo). |
 | `HTTP 422: Invalid request` on protection | Usually a `null` field. The script sends `"restrictions": null` deliberately — don't remove it. |
-| Protection applied but PRs merge instantly | The required check name doesn't match your job name. Re-run: `CHECK=your-job-name ./setup-github.sh` |
+| Protection applied but PRs merge instantly | The required check name doesn't match what actually runs. The script auto-detects from main's check runs and refuses ambiguous cases, so this should be rare — re-run `./run.sh --github-setup` after CI has run at least once on main, or pin it: `CHECK=<name> ./run.sh --github-setup` |
 | PRs never merge, no error | Almost always 4.3 wasn't done. Check it again. |
 | `gh label create` says already exists | Harmless, the script passes `--force`. |
 | Org blocks fine-grained tokens | Ask an owner to enable them in org settings, or fall back to a classic token with only `repo` — less safe, still workable. |

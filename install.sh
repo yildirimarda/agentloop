@@ -31,13 +31,17 @@
 #              import line, .mcp.json gains the graphify server alongside
 #              your servers, settings.json gains our deny rules alongside
 #              your rules. Idempotent; your entries always survive.
-#   yours    PLAN.md, AGENTS.md, opencode.json, Dockerfile.agent,
-#            workflows/ci.yml
+#   yours    PLAN.md, AGENTS.md, opencode.json, Dockerfile.agent
 #            → installed once, then never touched. On --update, if the
 #              TEMPLATE version actually changed since your install, the new
 #              template lands as <file>.agentloop-new for you to diff.
 #              PLAN.md never even gets a .agentloop-new — your plan is
 #              authoritative by design.
+#   ci       workflows/ci.yml
+#            → installed only when the project has no ci.yml. An existing CI
+#              pipeline is authoritative: kept untouched, no .agentloop-new,
+#              nothing to merge — `run.sh --github-setup` auto-detects its
+#              check name from the runs on main.
 #
 set -euo pipefail
 
@@ -63,7 +67,6 @@ USER_FILES=(
   AGENTS.md
   opencode.json
   Dockerfile.agent
-  .github/workflows/ci.yml
 )
 GITIGNORE_LINES=(
   "logs/"
@@ -302,8 +305,24 @@ if added:
 print("merged    " if added else "unchanged ")
 '
 
+# CI is special: if the project already has a pipeline, that pipeline IS the
+# CI this loop needs — ours is only a starter for projects without one. No
+# .agentloop-new, no merging, nothing for the user to reconcile.
+copy_ci() {
+  local rel=".github/workflows/ci.yml" src="$SRC/template/.github/workflows/ci.yml" dest="$TARGET/.github/workflows/ci.yml"
+  if [[ ! -e "$dest" ]]; then
+    (( DRY )) && { note "[dry] install   $rel"; return; }
+    mkdir -p "$(dirname "$dest")"; cp "$src" "$dest"; note "installed  $rel"
+  elif cmp -s "$src" "$dest"; then
+    note "unchanged  $rel"
+  else
+    note "kept yours $rel (existing CI is authoritative — --github-setup will auto-detect its check name)"
+  fi
+}
+
 for f in "${MANAGED_FILES[@]}"; do copy_managed "$f"; done
 for f in "${USER_FILES[@]}";    do copy_user "$f";    done
+copy_ci
 merge_claude_md
 merge_json ".mcp.json" "$MERGE_MCP"
 merge_json ".claude/settings.json" "$MERGE_SETTINGS"

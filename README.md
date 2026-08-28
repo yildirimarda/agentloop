@@ -34,14 +34,14 @@ contract, same guardrails.
 cd your-project
 
 # one-liner (public repo)
-curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh | bash
 
 # pin a release
-curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh \
   | bash -s -- --ref v0.1.0
 
 # private repo / no curl: clone and run (works with your git credentials)
-git clone https://github.com/yildirimarda/agentloop.git
+git clone https://github.com/OWNER/agentloop.git
 agentloop/install.sh /path/to/your-project
 
 # set models while installing
@@ -83,7 +83,7 @@ Three file classes — **nothing of yours is ever silently overwritten**:
 | `AGENTS.md` | yours | Kept. If the *template* version changed since your install, the new one lands as `.agentloop-new` to diff |
 | `opencode.json` | yours | Same |
 | `Dockerfile.agent` | yours | Same |
-| `.github/workflows/ci.yml` | yours | Same |
+| `.github/workflows/ci.yml` | ci | Installed only when the project has no CI. An existing pipeline is authoritative: kept untouched, no `.agentloop-new`, nothing to reconcile — `./run.sh --github-setup` auto-detects its check name from the runs on `main` |
 
 All merges are idempotent — running the installer twice adds nothing twice.
 

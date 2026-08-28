@@ -103,6 +103,8 @@ mkdir -p .claude
 printf '%s\n' '{"permissions":{"allow":["Bash(ls)"],"deny":["Bash(rm -rf /)"]},"other":"keep-me"}' > .claude/settings.json
 printf '%s\n' '# Plan' '- [ ] my existing item' > PLAN.md
 printf '%s\n' '#!/bin/bash' 'echo my own runner' > run.sh
+mkdir -p .github/workflows
+printf '%s\n' 'name: my-pipeline' 'on: [push]' 'jobs:' '  build-and-test:' '    runs-on: ubuntu-latest' '    steps:' '      - run: echo hi' > .github/workflows/ci.yml
 
 "$ROOT/install.sh" . >/dev/null 2>&1 || fail "install into pre-populated project failed"
 
@@ -131,6 +133,9 @@ grep -q "my existing item" PLAN.md           || fail "PLAN.md was modified"
 # foreign run.sh: kept, ours as .new
 grep -q "my own runner" run.sh               || fail "foreign run.sh was clobbered"
 [[ -f run.sh.agentloop-new ]]                || fail "expected run.sh.agentloop-new for foreign file"
+# existing CI: authoritative — kept untouched, and NO .agentloop-new noise
+grep -q "build-and-test" .github/workflows/ci.yml || fail "existing ci.yml was clobbered"
+[[ -f .github/workflows/ci.yml.agentloop-new ]] && fail "existing CI should not get a .agentloop-new"
 
 # ── 8. Merges are idempotent ──────────────────────────────────────────────────
 "$ROOT/install.sh" . --update >/dev/null 2>&1
