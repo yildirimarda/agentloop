@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/yildirimarda/agentloop/compare/v0.2.0...v0.3.0) (2026-08-28)
+
+
+### Features
+
+* format detection, --replan converter, CHECK passthrough ([b09dcc9](https://github.com/yildirimarda/agentloop/commit/b09dcc90204e1290e855f5a4aa49f8e5bb18ac6e))
+
 ## [0.2.0](https://github.com/yildirimarda/agentloop/compare/v0.1.3...v0.2.0) (2026-08-28)
 
 
