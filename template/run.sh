@@ -427,7 +427,7 @@ case "$MODE" in
   ghsetup)
     rule; echo "MODE: github-setup — configuring the repo from inside the container"; rule
     [[ -f "$REPO_DIR/setup-github.sh" ]] || die "setup-github.sh not found in $REPO_DIR"
-    in_container env AGENTLOOP_YES=1 bash ./setup-github.sh
+    in_container env AGENTLOOP_YES=1 CHECK="${CHECK:-ci}" bash ./setup-github.sh
     exit $? ;;
   init)
     [[ -n "$ARG_TEXT" ]] || die "--init needs a description (text or -f file)"
