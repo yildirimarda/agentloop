@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/yildirimarda/agentloop/compare/v0.3.0...v0.4.0) (2026-08-28)
+
+
+### Features
+
+* keep existing CI untouched and auto-detect the required check name ([dc5e41b](https://github.com/yildirimarda/agentloop/commit/dc5e41b70ec3cba8c8db3e47e9d222efc8d6b62f))
+
 ## [0.3.0](https://github.com/yildirimarda/agentloop/compare/v0.2.0...v0.3.0) (2026-08-28)
 
 
