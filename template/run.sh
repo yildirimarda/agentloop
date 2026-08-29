@@ -156,6 +156,18 @@ docker info >/dev/null 2>&1 \
 docker image inspect "$IMAGE" >/dev/null 2>&1 \
   || die "image '$IMAGE' not found. Build it:  docker build -t $IMAGE -f Dockerfile.agent ."
 
+# The agent works in THIS checkout — same directory, same branches. Anything
+# you leave uncommitted would be swept into its commits or dragged across its
+# branch switches. Refuse to start dirty. (Corollary, not enforceable here:
+# don't run git in this repo yourself while a run is in progress.)
+if [[ "$MODE" != "ghsetup" ]] && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+    die "working tree is not clean — commit or stash before starting a run.
+The agent works in this same checkout; uncommitted changes would end up in
+its commits. See what's pending with:  git status"
+  fi
+fi
+
 GH_RUN_TOKEN=""
 GH_AGENT_TOKEN=""
 OPENROUTER_KEY=""
@@ -255,6 +267,39 @@ run_agent() {
 made_commits() { git log --oneline origin/main..HEAD 2>/dev/null | grep -q .; }
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
 
+# Branch creation is deterministic work, so bash does it — the agent starts
+# every session already on a fresh work branch and can never dirty main, even
+# if it crashes mid-session or ignores the contract. (A weak model that still
+# runs `git switch -c` on top of this merely branches off the safety branch;
+# main stays untouched either way.)
+new_work_branch() {
+  local prefix="$1" text="${2:-}" slug branch
+  slug="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' \
+          | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40)"
+  branch="${prefix}${slug:+/$slug}-$(date +%m%d%H%M%S)"
+  git switch -c "$branch" >/dev/null 2>&1 || die "could not create work branch $branch"
+  WORK_BRANCH="$branch"
+  info "work branch: $branch"
+}
+WORK_BRANCH=""
+
+# After a failed/empty session, try to leave the repo back on a clean main.
+# Only safe when the tree is clean; otherwise print exact cleanup commands —
+# never destroy uncommitted work automatically.
+abandon_work_branch() {
+  [[ -n "$WORK_BRANCH" ]] || return 0
+  if [[ -z "$(git status --porcelain 2>/dev/null)" ]]; then
+    git switch main --quiet 2>/dev/null || true
+    git branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+    info "cleaned up: back on main, removed $WORK_BRANCH"
+  else
+    echo "  the crashed session left uncommitted changes on $WORK_BRANCH."
+    echo "  Inspect with:  git status && git diff"
+    echo "  Keep something? commit it there. Discard everything:"
+    echo "    git checkout -- . && git clean -fd && git switch main && git branch -D $WORK_BRANCH"
+  fi
+}
+
 # Poll until the PR merges, CI fails, or we time out. No agent turns, no
 # tokens burned — containerized gh calls only.
 #
@@ -338,9 +383,8 @@ $ARG_TEXT
 
 Your job in this session is ONLY to produce the plan. Do not implement features.
 
-0. First run: git switch -c chore/plan-draft
-   (direct pushes to main are blocked, so everything below happens on this
-   branch)
+0. You are already on a fresh work branch created for this session. Stay on
+   it — do not switch branches and do not touch main.
 
 1. Create PLAN.md in exactly this format:
 
@@ -385,9 +429,8 @@ cat <<'EOF'
 Audit the repository against PLAN.md and correct the plan. Do not implement
 features in this session.
 
-0. First run: git switch -c chore/replan
-   (direct pushes to main are blocked, so everything below happens on this
-   branch)
+0. You are already on a fresh work branch created for this session. Stay on
+   it — do not switch branches and do not touch main.
 
 1. For each item in PLAN.md, check whether it is actually done in the code.
    Fix the checkboxes so they reflect reality.
@@ -418,6 +461,8 @@ Your task for this session is exactly this item from PLAN.md:
 
 Do this:
 
+0. You are already on a fresh work branch created for this session — stay on
+   it. Skip any "create a branch" step; never switch to or touch main.
 1. Implement only that item. Do not start any other item and do not refactor
    unrelated code.
 2. Write or extend tests that prove it works.
@@ -444,7 +489,9 @@ case "$MODE" in
     [[ -n "$ARG_TEXT" ]] || die "--init needs a description (text or -f file)"
     rule; echo "MODE: init — drafting PLAN.md"; rule
     graph_sync
+    new_work_branch "chore/plan-draft" ""
     run_agent "$(prompt_init)"; rc=$?
+    made_commits || abandon_work_branch
     echo
     if made_commits; then
       pr="$(current_pr || true)"
@@ -461,7 +508,10 @@ case "$MODE" in
   replan)
     rule; echo "MODE: replan — auditing PLAN.md against the code"; rule
     graph_sync
-    run_agent "$(prompt_replan)"; exit $? ;;
+    new_work_branch "chore/replan" ""
+    run_agent "$(prompt_replan)"; rc=$?
+    made_commits || abandon_work_branch
+    exit "$rc" ;;
   task)
     [[ -n "$ARG_TEXT" ]] || die "--task needs text"
     rule; echo "MODE: task — one-off"; rule
@@ -479,7 +529,11 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
       info "on branch '$cur_branch' — agent will update the existing PR"
     fi
     graph_sync
+    if [[ "$cur_branch" == "main" || "$cur_branch" == "master" ]]; then
+      new_work_branch "task" "$ARG_TEXT"
+    fi
     run_agent "$ARG_TEXT"; rc=$?
+    made_commits || abandon_work_branch
     made_commits && git log --oneline origin/main..HEAD | sed 's/^/  /' \
                  || echo "  no commits — the agent wrote nothing"
     exit "$rc" ;;
@@ -529,6 +583,7 @@ for (( i = 1; i <= COUNT; i++ )); do
   rule
 
   graph_sync
+  new_work_branch "agent" "$item"
   run_agent "$(prompt_item "$item")"
 
   if ! made_commits; then
@@ -536,6 +591,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     echo "STOPPING: no commits were made. The model may be failing at tool"
     echo "calls — look at the tool list above. If there are no 'bash' calls,"
     echo "change the model in opencode.json."
+    abandon_work_branch
     exit 1
   fi
 

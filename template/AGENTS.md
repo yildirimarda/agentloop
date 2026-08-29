@@ -6,7 +6,8 @@ work you discovered along the way, open a pull request, and stop.
 
 ## Workflow
 
-1. `git switch -c feat/<short-slug>` — never work directly on `main`.
+1. `run.sh` has already created and switched to a fresh work branch for this
+   session. Stay on it — never switch branches, never touch `main`.
 2. Implement **only** the item you were given. Do not start other items, do not
    refactor unrelated code, do not "improve things while you're here".
 3. Write or extend tests that prove the item works.
