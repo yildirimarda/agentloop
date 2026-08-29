@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/yildirimarda/agentloop/compare/v0.6.1...v0.7.0) (2026-08-29)
+
+
+### Features
+
+* create the work branch in bash so the agent can never dirty main ([92cd6b4](https://github.com/yildirimarda/agentloop/commit/92cd6b454a511fc9b3efe87d37484f16ec67f924))
+
 ## [0.6.1](https://github.com/yildirimarda/agentloop/compare/v0.6.0...v0.6.1) (2026-08-28)
 
 
