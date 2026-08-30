@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/yildirimarda/agentloop/compare/v0.8.0...v0.9.0) (2026-08-30)
+
+
+### Features
+
+* reclassify release.yml as user-owned — projects customize release-type ([08080f1](https://github.com/yildirimarda/agentloop/commit/08080f16cbb50a22949c066d5865af70aa876ec0))
+
 ## [0.8.0](https://github.com/yildirimarda/agentloop/compare/v0.7.0...v0.8.0) (2026-08-30)
 
 
