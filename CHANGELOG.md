@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/yildirimarda/agentloop/compare/v0.7.0...v0.8.0) (2026-08-30)
+
+
+### Features
+
+* auto-retry failed CI by feeding the failing log back to the agent (--ci-retries) ([565a86f](https://github.com/yildirimarda/agentloop/commit/565a86f479b851971bb18d0f47ea4ade2a815e8a))
+
 ## [0.7.0](https://github.com/yildirimarda/agentloop/compare/v0.6.1...v0.7.0) (2026-08-29)
 
 
