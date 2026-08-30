@@ -21,8 +21,7 @@
 #   -h, --help           this
 #
 # File classes — nothing of yours is ever silently overwritten:
-#   managed  run.sh, setup-github.sh, workflows/automerge.yml,
-#            workflows/release.yml
+#   managed  run.sh, setup-github.sh, workflows/automerge.yml
 #            → replaced on --update. If a FOREIGN file with the same name
 #              exists on fresh install, yours is kept and ours lands as
 #              <file>.agentloop-new with a warning.
@@ -31,7 +30,8 @@
 #              import line, .mcp.json gains the graphify server alongside
 #              your servers, settings.json gains our deny rules alongside
 #              your rules. Idempotent; your entries always survive.
-#   yours    PLAN.md, AGENTS.md, opencode.json, Dockerfile.agent
+#   yours    PLAN.md, AGENTS.md, opencode.json, Dockerfile.agent,
+#            workflows/release.yml (projects customize release-type)
 #            → installed once, then never touched. On --update, if the
 #              TEMPLATE version actually changed since your install, the new
 #              template lands as <file>.agentloop-new for you to diff.
@@ -60,13 +60,13 @@ MANAGED_FILES=(
   run.sh
   setup-github.sh
   .github/workflows/automerge.yml
-  .github/workflows/release.yml
 )
 USER_FILES=(
   PLAN.md
   AGENTS.md
   opencode.json
   Dockerfile.agent
+  .github/workflows/release.yml
 )
 GITIGNORE_LINES=(
   "logs/"

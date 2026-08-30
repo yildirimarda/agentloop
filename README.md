@@ -34,14 +34,14 @@ contract, same guardrails.
 cd your-project
 
 # one-liner (public repo)
-curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh | bash
 
 # pin a release
-curl -fsSL https://raw.githubusercontent.com/OWNER/agentloop/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/yildirimarda/agentloop/main/install.sh \
   | bash -s -- --ref v0.1.0
 
 # private repo / no curl: clone and run (works with your git credentials)
-git clone https://github.com/OWNER/agentloop.git
+git clone https://github.com/yildirimarda/agentloop.git
 agentloop/install.sh /path/to/your-project
 
 # set models while installing
@@ -61,11 +61,11 @@ Full walkthrough with expected output at every step: **[docs/SETUP.md](docs/SETU
 curl -fsSL .../install.sh | bash -s -- --update --ref v0.2.0
 ```
 
-Managed files (`run.sh`, guardrails, MCP config, automerge/release workflows)
-are refreshed in place. Files you own (`PLAN.md`, `AGENTS.md`,
-`opencode.json`, `Dockerfile.agent`, `ci.yml`) are never overwritten — if the
-template version changed, it lands next to yours as `<file>.agentloop-new` so
-you can diff and adopt what you want.
+Managed files (`run.sh`, `setup-github.sh`, `automerge.yml`) are refreshed in
+place. Files you own (`PLAN.md`, `AGENTS.md`, `opencode.json`,
+`Dockerfile.agent`, `release.yml`) are never overwritten — if the template
+version changed, it lands next to yours as `<file>.agentloop-new` so you can
+diff and adopt what you want. An existing `ci.yml` is never touched at all.
 
 ## What gets installed
 
@@ -75,7 +75,8 @@ Three file classes — **nothing of yours is ever silently overwritten**:
 |---|---|---|
 | `run.sh` | managed | Refreshed on `--update` if it's ours (`.agentloop` stamp). A foreign file with the same name is kept; ours lands as `.agentloop-new` with a warning |
 | `setup-github.sh` | managed | Same |
-| `.github/workflows/automerge.yml`, `release.yml` | managed | Same |
+| `.github/workflows/automerge.yml` | managed | Same |
+| `.github/workflows/release.yml` | yours | Kept once installed — projects legitimately customize `release-type` (e.g. `simple` for tag-derived dynamic versions) |
 | `CLAUDE.md` | **merged** | Your content stays; an `@AGENTS.md` import line is appended (once) |
 | `.mcp.json` | **merged** | The `graphify` server is added alongside your existing MCP servers |
 | `.claude/settings.json` | **merged** | Our deny rules are unioned into yours; your allow/deny/other keys survive |
