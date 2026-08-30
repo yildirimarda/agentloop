@@ -15,6 +15,7 @@ MODE="plan"
 COUNT=1
 WAIT=1
 TIMEOUT_MIN=20
+CI_RETRIES=1
 MODEL=""
 USE_GRAPH=1
 DISCOVER=1
@@ -46,6 +47,9 @@ Options
                             over this run (default 10)
       --no-wait             don't wait for the PR to merge before the next item
       --timeout N           minutes to wait for a merge (default 20)
+      --ci-retries N        when a PR's CI fails, automatically feed the
+                            failing log back to the agent on the same branch
+                            and let it fix, up to N times (default 1; 0 = off)
   -m, --model ID            override the model from opencode.json
       --no-graph            skip the Graphify index step
       --image NAME          container image (default "agent")
@@ -80,6 +84,7 @@ while (( $# )); do
     --max-growth)   MAX_GROWTH="${2:?--max-growth needs a number}"; shift 2 ;;
     --no-wait)      WAIT=0; shift ;;
     --timeout)      TIMEOUT_MIN="${2:?--timeout needs minutes}"; shift 2 ;;
+    --ci-retries)   CI_RETRIES="${2:?--ci-retries needs a number}"; shift 2 ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
     --no-graph)     USE_GRAPH=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
@@ -334,6 +339,43 @@ wait_for_merge() {
   done
   info "timed out waiting for PR #$pr"
   return 1
+}
+
+# Fetch the tail of the failing CI log for a PR's head commit — readable with
+# the agent token's "Actions: Read-only" permission.
+ci_fail_log() {
+  local pr="$1" head rid
+  head="$(gh_c pr view "$pr" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+  [[ -n "$head" ]] || return 0
+  rid="$(gh_c api "repos/{owner}/{repo}/actions/runs?head_sha=$head&per_page=30" \
+        --jq '[.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out")][0].id' \
+        2>/dev/null || true)"
+  [[ -n "$rid" && "$rid" != "null" ]] || return 0
+  gh_c run view "$rid" --log-failed 2>/dev/null | tail -60
+}
+
+prompt_ci_fix() {
+cat <<EOF
+CI failed on pull request #$2, which implements this plan item:
+
+    $1
+
+You are already on the PR's branch. Stay on it — do not create a new branch
+and do not touch main. Do this:
+
+1. Diagnose the failure from the log tail below. If it is unclear, reproduce
+   it locally with the project's lint/test commands.
+2. Fix the CODE. Never weaken, skip or delete tests to get green. If a
+   lockfile check failed, regenerate the lockfile with the project's
+   dependency tool (e.g. uv lock) and commit it.
+3. Run the project's lint and test commands locally until they pass.
+4. Commit and push to this same branch — the existing PR updates itself.
+5. Stop. Do not merge, do not start anything else.
+
+--- FAILING CI LOG (tail) ---
+$3
+--- END LOG ---
+EOF
 }
 
 # Show the "- [ ]" lines that appeared in PLAN.md during this iteration.
@@ -610,13 +652,36 @@ for (( i = 1; i <= COUNT; i++ )); do
     continue
   fi
 
-  wait_for_merge "$pr"
-  case $? in
+  # Wait for the merge; on CI failure, feed the failing log back to the agent
+  # on the same branch and retry — bounded by --ci-retries. Bash fetches the
+  # log and switches branches (deterministic work); the model only fixes code.
+  fix_attempt=0
+  wrc=1
+  while :; do
+    wait_for_merge "$pr"
+    wrc=$?
+    [[ "$wrc" != "3" ]] && break
+    if (( fix_attempt >= CI_RETRIES )); then break; fi
+    fix_attempt=$((fix_attempt + 1))
+    echo
+    rule
+    echo "CI failed on PR #$pr — automatic fix attempt $fix_attempt/$CI_RETRIES"
+    rule
+    fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+    if [[ -z "$fb" ]] || ! git switch "$fb" --quiet 2>/dev/null; then
+      echo "  could not switch to the PR branch — leaving it to you."
+      break
+    fi
+    faillog="$(ci_fail_log "$pr")"
+    run_agent "$(prompt_ci_fix "$item" "$pr" "${faillog:-<log unavailable — reproduce locally>}")"
+  done
+
+  case "$wrc" in
     0) : ;;
     3) fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || echo '<branch>')"
        echo
-       echo "STOPPING: CI failed on PR #$pr."
-       echo "Fix it with a follow-up on the same branch:"
+       echo "STOPPING: CI is still failing on PR #$pr after $fix_attempt automatic fix attempt(s)."
+       echo "Take over on the same branch:"
        echo "  git switch $fb"
        echo "  ./run.sh --task \"<what to fix>\""
        exit 1 ;;

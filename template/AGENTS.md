@@ -12,7 +12,9 @@ work you discovered along the way, open a pull request, and stop.
    refactor unrelated code, do not "improve things while you're here".
 3. Write or extend tests that prove the item works.
 4. Run the project's lint and test commands (see Project reference below).
-   Fix failures until everything is green.
+   Fix failures until everything is green. If you changed dependencies
+   (pyproject.toml or equivalent), refresh the lockfile (`uv lock`) and
+   COMMIT it — CI rejects a stale lockfile.
 5. In `PLAN.md`, change that item's `- [ ]` to `- [x]`.
 6. Record any new work you discovered — see "Growing the plan" below.
 7. Commit using Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`,
