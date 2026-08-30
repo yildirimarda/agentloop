@@ -233,11 +233,29 @@ graph_sync() {
   fi
 }
 
+# Live view: the raw event stream is unreadable NDJSON, so the terminal gets
+# a human-readable heartbeat (tool calls + errors) while the FULL stream is
+# tee'd to the log file. Handles both engines' event shapes.
+stream_view() {
+  if command -v jq >/dev/null 2>&1; then
+    jq --unbuffered -Rr '
+      fromjson? |
+      if .type == "tool_use" then "  → " + (.tool // .name // "tool")
+      elif .type == "error" then
+        "  ✖ " + ((.error.message? // .error // .message // "error") | tostring)
+      elif .type == "assistant" then
+        (.message.content[]? | select(.type == "tool_use") | "  → " + .name)
+      else empty end' 2>/dev/null
+  else
+    cat
+  fi
+}
+
 run_agent() {
   local prompt="$1" log
   log="logs/$(date +%Y%m%d-%H%M%S)-$ENGINE.jsonl"
   info "engine: $ENGINE"
-  info "log: $log"
+  info "log: $log (full transcript; terminal shows tool calls only)"
   echo
 
   if [[ "$ENGINE" == "claude" ]]; then
@@ -247,9 +265,9 @@ run_agent() {
     in_container claude -p "$prompt" \
       --permission-mode bypassPermissions \
       --output-format stream-json --verbose \
-      ${MODEL:+--model "$MODEL"} | tee "$log"
+      ${MODEL:+--model "$MODEL"} | tee "$log" | stream_view
   else
-    in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log"
+    in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
   fi
   local rc=${PIPESTATUS[0]}
 
@@ -376,6 +394,35 @@ and do not touch main. Do this:
 $3
 --- END LOG ---
 EOF
+}
+
+# Wait for a PR to merge; on CI failure, feed the failing log back to the
+# agent on the same branch and retry — bounded by --ci-retries. Bash fetches
+# the log and switches branches (deterministic work); the model only fixes
+# code. Result in AWAIT_RC (wait_for_merge codes), attempts in AWAIT_FIXES.
+AWAIT_RC=1
+AWAIT_FIXES=0
+await_merge_and_autofix() {
+  local pr="$1" desc="$2" fb faillog
+  AWAIT_FIXES=0
+  while :; do
+    wait_for_merge "$pr"
+    AWAIT_RC=$?
+    [[ "$AWAIT_RC" != "3" ]] && return 0
+    if (( AWAIT_FIXES >= CI_RETRIES )); then return 0; fi
+    AWAIT_FIXES=$((AWAIT_FIXES + 1))
+    echo
+    rule
+    echo "CI failed on PR #$pr — automatic fix attempt $AWAIT_FIXES/$CI_RETRIES"
+    rule
+    fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+    if [[ -z "$fb" ]] || ! git switch "$fb" --quiet 2>/dev/null; then
+      echo "  could not switch to the PR branch — leaving it to you."
+      return 0
+    fi
+    faillog="$(ci_fail_log "$pr")"
+    run_agent "$(prompt_ci_fix "$desc" "$pr" "${faillog:-<log unavailable — reproduce locally>}")"
+  done
 }
 
 # Show the "- [ ]" lines that appeared in PLAN.md during this iteration.
@@ -575,9 +622,33 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
       new_work_branch "task" "$ARG_TEXT"
     fi
     run_agent "$ARG_TEXT"; rc=$?
-    made_commits || abandon_work_branch
-    made_commits && git log --oneline origin/main..HEAD | sed 's/^/  /' \
-                 || echo "  no commits — the agent wrote nothing"
+    if ! made_commits; then
+      echo "  no commits — the agent wrote nothing"
+      abandon_work_branch
+      exit "$rc"
+    fi
+    git log --oneline origin/main..HEAD | sed 's/^/  /'
+    pr="$(current_pr || true)"
+    if [[ -n "$pr" ]]; then
+      info "PR #$pr opened"
+      if (( WAIT )); then
+        await_merge_and_autofix "$pr" "$ARG_TEXT"
+        case "$AWAIT_RC" in
+          0) head_branch="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+             git switch main --quiet 2>/dev/null || true
+             git_pull_c
+             [[ -n "$head_branch" ]] && git branch -D "$head_branch" >/dev/null 2>&1 || true
+             info "merged — back on main" ;;
+          3) echo
+             echo "CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
+             echo "Take over:  git switch \$(gh pr view $pr --json headRefName -q .headRefName)" ;;
+          *) pu="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
+             echo "PR #$pr did not merge yet: ${pu:-open it on GitHub}" ;;
+        esac
+      else
+        info "--no-wait: not waiting for the merge (automerge lands it when CI is green)"
+      fi
+    fi
     exit "$rc" ;;
 esac
 
@@ -652,35 +723,12 @@ for (( i = 1; i <= COUNT; i++ )); do
     continue
   fi
 
-  # Wait for the merge; on CI failure, feed the failing log back to the agent
-  # on the same branch and retry — bounded by --ci-retries. Bash fetches the
-  # log and switches branches (deterministic work); the model only fixes code.
-  fix_attempt=0
-  wrc=1
-  while :; do
-    wait_for_merge "$pr"
-    wrc=$?
-    [[ "$wrc" != "3" ]] && break
-    if (( fix_attempt >= CI_RETRIES )); then break; fi
-    fix_attempt=$((fix_attempt + 1))
-    echo
-    rule
-    echo "CI failed on PR #$pr — automatic fix attempt $fix_attempt/$CI_RETRIES"
-    rule
-    fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
-    if [[ -z "$fb" ]] || ! git switch "$fb" --quiet 2>/dev/null; then
-      echo "  could not switch to the PR branch — leaving it to you."
-      break
-    fi
-    faillog="$(ci_fail_log "$pr")"
-    run_agent "$(prompt_ci_fix "$item" "$pr" "${faillog:-<log unavailable — reproduce locally>}")"
-  done
-
-  case "$wrc" in
+  await_merge_and_autofix "$pr" "$item"
+  case "$AWAIT_RC" in
     0) : ;;
     3) fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || echo '<branch>')"
        echo
-       echo "STOPPING: CI is still failing on PR #$pr after $fix_attempt automatic fix attempt(s)."
+       echo "STOPPING: CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
        echo "Take over on the same branch:"
        echo "  git switch $fb"
        echo "  ./run.sh --task \"<what to fix>\""
