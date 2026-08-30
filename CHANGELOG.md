@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/yildirimarda/agentloop/compare/v0.9.0...v0.10.0) (2026-08-30)
+
+
+### Features
+
+* task mode now waits for merge with CI auto-fix; readable live stream in terminal ([ab83d69](https://github.com/yildirimarda/agentloop/commit/ab83d69af499c7b7bdf367b05536e2449e084951))
+
 ## [0.9.0](https://github.com/yildirimarda/agentloop/compare/v0.8.0...v0.9.0) (2026-08-30)
 
 
