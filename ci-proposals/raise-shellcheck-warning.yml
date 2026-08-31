@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+
+      - name: Shell syntax
+        run: |
+          bash -n install.sh
+          bash -n tests/install-test.sh
+          bash -n template/run.sh
+          bash -n template/setup-github.sh
+
+      # Severity raised to warning so only actionable findings break CI.
+      - name: Shellcheck
+        run: shellcheck -S warning install.sh tests/install-test.sh template/run.sh template/setup-github.sh
+
+      - name: JSON validity
+        run: |
+          python3 - <<'PY'
+          import json
+          for f in ["template/opencode.json", "template/.mcp.json", "template/.claude/settings.json"]:
+              json.load(open(f))
+              print("ok", f)
+          PY
+
+      - name: Workflow YAML validity
+        run: |
+          python3 - <<'PY'
+          import glob, yaml
+          for f in sorted(glob.glob("template/.github/workflows/*.yml")) + sorted(glob.glob(".github/workflows/*.yml")):
+              yaml.safe_load(open(f))
+              print("ok", f)
+          PY
+
+      - name: Installer test suite
+        run: bash tests/install-test.sh

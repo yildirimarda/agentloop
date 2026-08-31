@@ -7,7 +7,7 @@
 ## Milestone 1: Hardening
 
 - [x] Extend tests/install-test.sh with a --dry-run assertion suite covering every managed and user file action
-- [ ] Raise shellcheck severity from error to warning in CI and fix every finding in install.sh, tests/install-test.sh, template/run.sh and template/setup-github.sh
+- [x] Raise shellcheck severity from error to warning in CI and fix every finding in install.sh, tests/install-test.sh, template/run.sh and template/setup-github.sh
 - [x] Add an --uninstall flag to install.sh that removes managed files and the .agentloop stamp while leaving user files untouched, with a test
 
 ## Milestone 2: Engines
