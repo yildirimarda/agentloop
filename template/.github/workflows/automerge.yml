@@ -26,8 +26,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Enable auto-merge
+        # GITHUB_TOKEN merges do NOT trigger on:push workflows (GitHub's
+        # recursion guard) — so release-please never sees bot-merged commits.
+        # Set an AUTOMERGE_TOKEN repo secret (a PAT with Contents+PR write,
+        # e.g. the gh-agent token) and merges count as yours, triggering
+        # release-please immediately. Without it, everything still works;
+        # release-please just waits for the next human push (or a manual
+        # Actions -> release -> Run workflow).
         run: gh pr merge --auto --squash "$PR" --repo "$REPO"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}

@@ -1332,6 +1332,14 @@ genuinely need a model: writing code, and noticing what else the project needs.
 
 ## How releases work
 
+> **If no release PR appears after an auto-merge:** merges performed with the
+> default `GITHUB_TOKEN` do not trigger `on: push` workflows (GitHub's
+> recursion guard), so release-please never runs on bot-merged commits. Fix:
+> add a repo secret `AUTOMERGE_TOKEN` (Settings → Secrets and variables →
+> Actions) containing a PAT with Contents + Pull requests write — the
+> gh-agent token works — and `automerge.yml` will merge with it. One-off
+> workaround: Actions → release → Run workflow, or just push any commit.
+
 A recurring confusion, worth its own mental model: **merged code is not
 released code.** `main` is a continuously written ledger; a release is the act
 of stamping "everything up to HERE is vX.Y.Z" — a git tag, a changelog entry,
