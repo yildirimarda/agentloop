@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/yildirimarda/agentloop/compare/v0.10.0...v0.11.0) (2026-08-31)
+
+
+### Features
+
+* task mode waits for merge with CI auto-fix; readable live stream (real OpenCode schema); .agentloop.local per-machine overrides ([d229d70](https://github.com/yildirimarda/agentloop/commit/d229d70bfc7af5b368189cebb535b5b1448a536c))
+
 ## [0.10.0](https://github.com/yildirimarda/agentloop/compare/v0.9.0...v0.10.0) (2026-08-30)
 
 
