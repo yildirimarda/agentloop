@@ -147,4 +147,48 @@ d = json.load(open(".mcp.json"))
 assert set(d["mcpServers"]) == {"mydb", "graphify"}, sorted(d["mcpServers"])
 PY
 
+# ── 9. --dry-run announces the right actions on a fresh target ────────────────
+cd "$TMP"
+git init -q proj3 && cd proj3 && git commit --allow-empty -q -m init
+dryout="$("$ROOT/install.sh" . --dry-run)"
+echo "$dryout" | grep -q '\[dry\] install   run.sh'   || fail "dry-run: missing install action for run.sh"
+echo "$dryout" | grep -q '\[dry\] install   PLAN.md'  || fail "dry-run: missing install action for PLAN.md"
+[[ -e run.sh || -e PLAN.md || -e .agentloop ]] && fail "dry-run created files on a fresh target"
+
+# ── 10. --check reports installed version; --uninstall removes only ours ─────
+cd "$TMP/proj"
+# capture-then-grep: grep -q on a live pipe would SIGPIPE the installer's
+# later output lines and trip pipefail
+chk_out="$("$ROOT/install.sh" . --check)"
+echo "$chk_out" | grep -q '^installed: ' || fail "--check did not report installed version"
+"$ROOT/install.sh" . --uninstall >/dev/null
+[[ -e run.sh ]] && fail "--uninstall left run.sh behind"
+[[ -e setup-github.sh ]] && fail "--uninstall left setup-github.sh behind"
+[[ -e .agentloop ]] && fail "--uninstall left the stamp behind"
+[[ -e AGENTS.md.agentloop-new ]] && fail "--uninstall left .agentloop-new files behind"
+grep -q "local customisation" AGENTS.md || fail "--uninstall touched a user file (AGENTS.md)"
+[[ -e PLAN.md && -e opencode.json && -e Dockerfile.agent ]] || fail "--uninstall removed user files"
+[[ -e CLAUDE.md && -e .mcp.json && -e .claude/settings.json ]] || fail "--uninstall removed merged files"
+"$ROOT/install.sh" . >/dev/null 2>&1 || fail "reinstall after --uninstall failed"
+[[ -x run.sh && -f .agentloop ]] || fail "reinstall incomplete"
+
+# ── 11. Live-stream parsers handle both engines' recorded event shapes ───────
+# Extract stream_view from the installed run.sh and feed it fixture lines
+# captured from real sessions. Guards the parsers against schema regressions.
+eval "$(sed -n '/^stream_view()/,/^}$/p' run.sh)"
+sv_out="$(printf '%s\n' \
+  '{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git status"}},"metadata":{"openrouter":{"reasoning_details":[{"type":"reasoning.text","text":"Check the branch first."}]}}}}' \
+  '{"type":"step_finish","part":{"type":"step-finish","tokens":{"total":10309}}}' \
+  '{"type":"text","part":{"type":"text","text":"All done."}}' \
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"},{"type":"text","text":"claude says hi"}]}}' \
+  '{"type":"error","error":{"message":"rate limited"}}' \
+  'not json at all' \
+  | stream_view)"
+echo "$sv_out" | grep -q '⋯ Check the branch first.' || fail "stream_view: reasoning not shown"
+echo "$sv_out" | grep -q '→ bash: git status'        || fail "stream_view: tool+input not shown"
+echo "$sv_out" | grep -q 'step done (10k tok)'       || fail "stream_view: step tokens not shown"
+echo "$sv_out" | grep -q 'All done.'                 || fail "stream_view: opencode text not shown"
+echo "$sv_out" | grep -q '→ Bash'                    || fail "stream_view: claude tool_use not shown"
+echo "$sv_out" | grep -q '✖ rate limited'            || fail "stream_view: error not shown"
+
 echo "install-test OK"

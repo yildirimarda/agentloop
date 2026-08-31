@@ -18,6 +18,13 @@
 #                        if missing)
 #   --small-model ID     set opencode.json "small_model"
 #   --dry-run            print what would happen, change nothing
+#   --check              report installed version vs the newest release tag,
+#                        change nothing
+#   --uninstall          remove agentloop's managed files and the .agentloop
+#                        stamp; your files (PLAN.md, AGENTS.md, opencode.json,
+#                        Dockerfile.agent, ci.yml, release.yml) and the merged
+#                        files (CLAUDE.md, .mcp.json, .claude/settings.json)
+#                        are left untouched
 #   -h, --help           this
 #
 # File classes — nothing of yours is ever silently overwritten:
@@ -52,6 +59,8 @@ TARGET=""
 FORCE=0
 UPDATE=0
 DRY=0
+CHECKMODE=0
+UNINSTALL=0
 MODEL=""
 SMALL_MODEL=""
 CONFLICTS=0
@@ -99,6 +108,8 @@ while (( $# )); do
     --update)       UPDATE=1; shift ;;
     --force)        FORCE=1; shift ;;
     --dry-run)      DRY=1; shift ;;
+    --check)        CHECKMODE=1; shift ;;
+    --uninstall)    UNINSTALL=1; shift ;;
     --model)        MODEL="${2:?--model needs an id}"; shift 2 ;;
     --small-model)  SMALL_MODEL="${2:?--small-model needs an id}"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
@@ -111,6 +122,50 @@ TARGET="${TARGET:-$PWD}"
 [[ -d "$TARGET" ]] || die "target directory not found: $TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
 STAMP="$TARGET/.agentloop"
+
+# ── Lightweight modes that need no template ──────────────────────────────────
+if (( CHECKMODE )); then
+  [[ -f "$STAMP" ]] || die "agentloop is not installed here (no .agentloop stamp)."
+  inst_ver="$({ grep '^version=' "$STAMP" 2>/dev/null || true; } | cut -d= -f2)"
+  inst_ref="$({ grep '^ref='     "$STAMP" 2>/dev/null || true; } | cut -d= -f2)"
+  echo "installed: ${inst_ver:-unknown} (ref: ${inst_ref:-unknown})"
+  if [[ "$REPO" == *"CHANGE""_ME"* ]]; then
+    echo "latest:    cannot query — repo URL not configured"
+    exit 0
+  fi
+  latest="$(git ls-remote --tags --refs "$REPO" 2>/dev/null             | awk -F/ '{print $NF}' | grep -E '^v?[0-9]' | sort -V | tail -1 || true)"
+  if [[ -z "$latest" ]]; then
+    echo "latest:    could not query $REPO (offline, or no release tags yet)"
+    exit 0
+  fi
+  echo "latest:    $latest"
+  if [[ "$latest" == "v$inst_ver" || "$latest" == "$inst_ver" ]]; then
+    echo "up to date."
+  else
+    echo "update available:  install.sh . --update"
+  fi
+  exit 0
+fi
+
+if (( UNINSTALL )); then
+  [[ -f "$STAMP" ]] || die "agentloop is not installed here (no .agentloop stamp)."
+  echo "> uninstalling agentloop from $TARGET"
+  for f in "${MANAGED_FILES[@]}"; do
+    if [[ -e "$TARGET/$f" ]]; then
+      if (( DRY )); then note "[dry] remove  $f"; else rm -f "$TARGET/$f"; note "removed   $f"; fi
+    fi
+  done
+  while IFS= read -r nf; do
+    [[ -n "$nf" ]] || continue
+    if (( DRY )); then note "[dry] remove  ${nf#"$TARGET"/}"; else rm -f "$nf"; note "removed   ${nf#"$TARGET"/}"; fi
+  done < <(find "$TARGET" -maxdepth 3 -name '*.agentloop-new' -not -path "$TARGET/.git/*" 2>/dev/null)
+  if (( DRY )); then note "[dry] remove  .agentloop"; else rm -f "$STAMP"; note "removed   .agentloop"; fi
+  echo
+  echo "Kept (they are yours now): PLAN.md, AGENTS.md, opencode.json,"
+  echo "Dockerfile.agent, ci.yml, release.yml, and the merged CLAUDE.md /"
+  echo ".mcp.json / .claude/settings.json — delete manually if unwanted."
+  exit 0
+fi
 
 # ── Locate the template: local clone or remote fetch ─────────────────────────
 SRC=""
@@ -364,6 +419,17 @@ PY
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
+if (( ! DRY )); then
+  NEWFILES="$(cd "$TARGET" && find . -name '*.agentloop-new' -not -path './.git/*' 2>/dev/null | sed 's|^\./||' | sort)"
+  if [[ -n "$NEWFILES" ]]; then
+    echo
+    echo "Template updates waiting for your review:"
+    while IFS= read -r nf; do
+      echo "  diff ${nf%.agentloop-new} $nf   # adopt what you want, then: rm $nf"
+    done <<<"$NEWFILES"
+  fi
+fi
+
 if (( CONFLICTS )); then
   echo
   warn "$CONFLICTS conflict(s). Your files were kept; review each *.agentloop-new:"

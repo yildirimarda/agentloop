@@ -66,6 +66,9 @@ place. Files you own (`PLAN.md`, `AGENTS.md`, `opencode.json`,
 `Dockerfile.agent`, `release.yml`) are never overwritten — if the template
 version changed, it lands next to yours as `<file>.agentloop-new` so you can
 diff and adopt what you want. An existing `ci.yml` is never touched at all.
+The installer also has `--check` (installed vs newest release, changes
+nothing) and `--uninstall` (removes only agentloop's managed files and stamp;
+everything of yours stays).
 
 ## What gets installed
 
@@ -116,6 +119,7 @@ makes free-tier token budgets workable.
 install.sh          the installer (local and remote mode)
 template/           everything that lands in a target project
 docs/SETUP.md       full walkthrough: phases 0-8, troubleshooting, reference
+docs/ENGINES.md     the engine contract — what a third engine must satisfy
 tests/              installer test suite (runs in CI)
 PLAN.md             this repo's own roadmap — agentloop develops itself
 version.txt         current version (managed by release-please)
@@ -126,9 +130,9 @@ Releases are cut by release-please from conventional commits; install with
 
 ## Roadmap
 
-See [PLAN.md](PLAN.md) — next up: a third engine (Codex CLI), installer
-`--check`/`--uninstall`, and an engine abstraction contract. This repo runs
-its own loop: `./install.sh . && ./run.sh`.
+See [PLAN.md](PLAN.md) — next up: a third engine (Codex CLI) against the
+documented [engine contract](docs/ENGINES.md), and stricter shellcheck in CI.
+This repo runs its own loop: `./install.sh . && ./run.sh`.
 
 ## License
 

@@ -55,6 +55,7 @@ You write the plan once — or have the agent draft it — then run `./run.sh`.
   - [Graphify: why token usage stays low](#graphify-why-token-usage-stays-low)
   - [Why Docker means less configuration](#why-docker-means-less-configuration)
   - [Division of responsibility](#division-of-responsibility)
+  - [How releases work](#how-releases-work)
   - [Notes](#notes)
   - [Every stop message and what to do](#every-stop-message-and-what-to-do)
   - [Quick reference](#quick-reference)
@@ -1100,6 +1101,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `./run.sh --task "text"` | One-off task, ignores `PLAN.md` |
 | `./run.sh --next` | Dry run: print the next item. No API calls |
 | `./run.sh --reindex` | Rebuild the Graphify graph from scratch |
+| `./run.sh --github-setup` | Branch protection + auto-merge + labels, from inside the container (`gh-admin` keychain token) |
 | `./run.sh --help` | All flags |
 
 | Flag | Default | Use when |
@@ -1107,11 +1109,21 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `-e, --engine NAME` | `opencode` | `claude` runs the same loop on paid Claude Code — see the next section |
 | `--no-discover` | off | You want the plan consumed, not extended |
 | `--max-growth N` | 10 | Young project: raise it. Tight scope: lower it |
+| `--ci-retries N` | 1 | On a red PR, feed the failing CI log back to the agent on the same branch, up to N times (0 = off) |
+| `--auto-replan` | off | When the plan runs out mid-loop, run one replan session (plan PR for your review) instead of just stopping |
 | `--no-wait` | off | Rarely — `main` goes stale and items can repeat |
 | `--timeout N` | 20 | CI takes longer than 20 minutes |
 | `-m ID` | from config | Trying a different model for one run |
 | `--no-graph` | off | Graphify is misbehaving |
 | `--image NAME` | `agent` | You keep multiple container variants |
+
+**Per-machine defaults without touching git:** put `KEY=VALUE` lines in
+`.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
+`ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`.
+Precedence: CLI flags > `.agentloop.local` > committed defaults
+(`opencode.json`). This is the intended way to switch models freely — the
+committed config stays the team/repo default; your experiments never require
+a commit or push.
 
 ---
 
@@ -1205,10 +1217,19 @@ required, not a nicety: until the merge lands, `PLAN.md` on `main` still shows
 the item unchecked, so the next iteration would redo it. `--no-wait` skips the
 wait and warns about exactly this.
 
-**Verification is repo state.** Each iteration checks that commits exist, that a
-PR was opened, and that the checkbox count moved. Any of those missing stops the
-run with a specific reason rather than continuing cheerfully. Exit codes are not
-trusted — "exit 0" doesn't mean the work happened.
+**Verification's ground truth is GitHub, not local git.** The agent commits
+inside the container, and the host's view of refs on a macOS bind mount can lag
+those writes — early versions trusted `git log` locally and produced false
+"nothing happened" verdicts for sessions that had opened perfectly good PRs.
+Each iteration now asks GitHub whether a PR exists for the work branch; local
+commits are only a fallback diagnostic. Exit codes are trusted least of all —
+"exit 0" doesn't mean the work happened, and non-zero doesn't mean it didn't.
+
+**On CI failure, the log goes back to the agent.** `wait_for_merge` detects a
+red PR, bash fetches the failing job's log tail via the Actions API, switches
+to the PR branch, and runs a fix session — up to `--ci-retries` times. Bash
+does the deterministic parts (log fetching, branch switching); the model only
+fixes code.
 
 **Growth is measured.** Added items are computed from the done/remaining deltas,
 printed, and capped.
@@ -1288,6 +1309,31 @@ genuinely need a model: writing code, and noticing what else the project needs.
 
 ---
 
+## How releases work
+
+A recurring confusion, worth its own mental model: **merged code is not
+released code.** `main` is a continuously written ledger; a release is the act
+of stamping "everything up to HERE is vX.Y.Z" — a git tag, a changelog entry,
+and a human decision about the moment.
+
+The release PR (opened by release-please from its own branch
+`release-please--branches--main`) carries **no code** — its diff is just the
+changelog bookkeeping. It exists for two reasons: the changelog is a file on
+protected `main` (so it must travel like any change), and a release is a
+*decision*, not an automatic consequence of merging. The open PR is a standing
+question — "cut it now?" — that keeps updating itself as feats land. Your merge
+is the answer: that merge triggers the release workflow, which creates the tag
+**at that commit** plus the GitHub release.
+
+Practical rules that follow: merge the release PR between runs, never during
+one; batch it (merging after every feat produces version-number sprawl — one
+merge at end-of-day gives one clean version); and with hatch-vcs the tag IS the
+package version, so the two can never desync. Commit types drive the numbers:
+`fix:` → patch, `feat:` → minor, `feat!:` → major; `chore:`/`ci:`/`docs:`
+neither trigger nor appear.
+
+---
+
 ## Notes
 
 **CI plan items work through proposals.** The agent can't touch
@@ -1302,6 +1348,23 @@ it.
 ordered so each depends only on items above it, written as an instruction rather
 than a topic. "Add rate limiting to the login endpoint" finishes in 8 turns;
 "rewrite the auth module" burns 40 and breaks halfway.
+
+**Flaky tests are the loop's worst enemy.** A nondeterministic test (unseeded
+RNG, time-dependent assertion) turns your merge gate into a dice roll: the
+agent's correct PR fails randomly, `--ci-retries` burns sessions on unfixable
+"failures", and trust in red erodes. When one surfaces, fixing it IS the next
+task — seed the RNG or assert the real contract.
+
+**Long test suites vs the agent's shell timeout.** The agent's in-container
+commands time out around two minutes; a 10-minute suite cannot be verified
+locally by it, so it silently falls back to letting CI be the judge. Give it a
+fast targeted command in `AGENTS.md`'s Project reference (e.g.
+`uv run pytest -q -x tests/unit`) alongside the full-suite command CI runs.
+
+**While a run is in progress, the repo is the agent's.** Same checkout, same
+branches: don't run git commands in it, and don't merge other PRs (the
+"branch must be up to date" rule would strand the agent's PR). Your commits
+and merges happen between runs, from `main`.
 
 **Rate limits.** OpenRouter caps free models at 20 requests/minute regardless of
 credit, and 1,000 requests/day once you've put $10 on the account (50/day below

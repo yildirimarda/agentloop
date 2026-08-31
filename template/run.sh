@@ -21,6 +21,7 @@ MODEL=""
 USE_GRAPH=1
 DISCOVER=1
 MAX_GROWTH=10
+AUTO_REPLAN=0
 ARG_TEXT=""
 ANTHROPIC_KEY=""
 
@@ -35,7 +36,7 @@ if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -68,6 +69,9 @@ Options
       --ci-retries N        when a PR's CI fails, automatically feed the
                             failing log back to the agent on the same branch
                             and let it fix, up to N times (default 1; 0 = off)
+      --auto-replan         when the plan runs out mid-loop, run one replan
+                            session so the agent proposes the next wave (as a
+                            plan-labelled PR you review), then stop
   -m, --model ID            override the model from opencode.json
       --no-graph            skip the Graphify index step
       --image NAME          container image (default "agent")
@@ -107,6 +111,7 @@ while (( $# )); do
     --no-wait)      WAIT=0; shift ;;
     --timeout)      TIMEOUT_MIN="${2:?--timeout needs minutes}"; shift 2 ;;
     --ci-retries)   CI_RETRIES="${2:?--ci-retries needs a number}"; shift 2 ;;
+    --auto-replan)  AUTO_REPLAN=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
     --no-graph)     USE_GRAPH=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
@@ -615,6 +620,26 @@ Do this:
 EOF
 }
 
+# Replan is used both as a standalone mode and by --auto-replan when the plan
+# runs out mid-loop. Opens a plan-labelled PR (never auto-merged) and stops.
+do_replan() {
+  rule; echo "MODE: replan — auditing PLAN.md against the code"; rule
+  graph_sync
+  new_work_branch "chore/replan" ""
+  run_agent "$(prompt_replan)"
+  local rc=$? rp rp_url
+  rp="$(current_pr || true)"
+  if [[ -n "$rp" ]]; then
+    rp_url="$(gh_c pr view "$rp" --json url -q .url 2>/dev/null || true)"
+    echo
+    echo "Plan PR #$rp opened: ${rp_url:-see it on GitHub}"
+    echo "Review and merge it yourself — plan PRs never auto-merge."
+  else
+    made_commits || abandon_work_branch
+  fi
+  return "$rc"
+}
+
 # ── One-shot modes ───────────────────────────────────────────────────────────
 case "$MODE" in
   reindex)
@@ -646,12 +671,7 @@ case "$MODE" in
     fi
     exit "$rc" ;;
   replan)
-    rule; echo "MODE: replan — auditing PLAN.md against the code"; rule
-    graph_sync
-    new_work_branch "chore/replan" ""
-    run_agent "$(prompt_replan)"; rc=$?
-    [[ -n "$(current_pr || true)" ]] || made_commits || abandon_work_branch
-    exit "$rc" ;;
+    do_replan; exit $? ;;
   task)
     [[ -n "$ARG_TEXT" ]] || die "--task needs text"
     rule; echo "MODE: task — one-off"; rule
@@ -731,9 +751,16 @@ for (( i = 1; i <= COUNT; i++ )); do
       echo "every item and its status, via a 'plan'-labelled PR you review."
     else
       echo "PLAN.md is complete — nothing left to do."
-      echo "Have the agent propose the next wave:  ./run.sh --replan"
-      echo "(it audits the code, adds what's clearly missing, opens a plan PR"
-      echo "for your review) — or add items yourself."
+      if (( AUTO_REPLAN )); then
+        echo "--auto-replan: having the agent propose the next wave..."
+        echo
+        do_replan
+      else
+        echo "Have the agent propose the next wave:  ./run.sh --replan"
+        echo "(it audits the code, adds what's clearly missing, opens a plan PR"
+        echo "for your review) — or add items yourself, or set AUTO_REPLAN=1 in"
+        echo ".agentloop.local to do this automatically."
+      fi
     fi
     break
   fi
