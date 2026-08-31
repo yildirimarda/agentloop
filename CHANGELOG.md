@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/yildirimarda/agentloop/compare/v0.12.1...v0.12.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* merge with AUTOMERGE_TOKEN so bot merges trigger release-please ([f2fb5f0](https://github.com/yildirimarda/agentloop/commit/f2fb5f0613e7219b2943e8eb221527cb92620621))
+
 ## [0.12.1](https://github.com/yildirimarda/agentloop/compare/v0.12.0...v0.12.1) (2026-08-31)
 
 
