@@ -1176,6 +1176,27 @@ $ ENGINE=claude ./run.sh --replan             # env var works too
 `-m` passes through to `claude --model` if you want to pin a specific model;
 otherwise Claude Code's default is used.
 
+### Optional third engine: Codex CLI
+
+`--engine codex` runs OpenAI's Codex CLI headlessly (`codex exec --json`)
+under the exact same loop. Setup is one keychain entry plus an image rebuild:
+
+```
+$ security add-generic-password -s codex -a "$USER" -w '<openai-api-key>'
+$ docker build -t agent -f Dockerfile.agent .
+$ docker run --rm agent codex --version
+```
+
+Two things to know. First, Codex ships its own sandbox (bubblewrap), which
+cannot start inside our container — run.sh passes
+`--dangerously-bypass-approvals-and-sandbox`, which is safe here for the same
+reason `bypassPermissions` is for Claude Code: the container is the boundary.
+Second, Codex has **no per-command deny rules** (only coarse approval/sandbox
+modes), so it is the least-guarded engine — the GitHub-side layers (PAT
+without workflow permissions, branch protection) do the real enforcement.
+Codex reads `AGENTS.md` natively, so the workflow contract applies unchanged.
+`-m` maps to Codex's `model` config key.
+
 ### The split that gets the most per dollar
 
 Use the paid engine where judgement matters and mistakes compound; use the free

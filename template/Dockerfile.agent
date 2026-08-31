@@ -10,7 +10,7 @@ ARG TF_VERSION=1.9.8
 
 # ── Base tools + Java (required by Spark) ────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl ca-certificates jq unzip gnupg lsb-release \
+      git curl ca-certificates jq unzip gnupg lsb-release shellcheck \
       python3 openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
@@ -45,6 +45,9 @@ RUN npm install -g opencode-ai
 # Used only when you run `./run.sh --engine claude`. Authenticates with
 # ANTHROPIC_API_KEY passed at runtime — no login flow needed in headless mode.
 RUN npm install -g @anthropic-ai/claude-code
+
+# Codex CLI (optional third engine: ./run.sh --engine codex)
+RUN npm install -g @openai/codex
 
 # ── Graphify: codebase knowledge graph, cuts token usage substantially ───────
 # PyPI package name is "graphifyy" (double y) — plain "graphify" on PyPI is a

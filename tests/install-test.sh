@@ -191,4 +191,37 @@ echo "$sv_out" | grep -q 'All done.'                 || fail "stream_view: openc
 echo "$sv_out" | grep -q '→ Bash'                    || fail "stream_view: claude tool_use not shown"
 echo "$sv_out" | grep -q '✖ rate limited'            || fail "stream_view: error not shown"
 
+# Codex fixtures (shapes verbatim from the official --json docs)
+cx_out="$(printf '%s\n' \
+  '{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}' \
+  '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"bash -lc ls","status":"in_progress"}}' \
+  '{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"List the repo first."}}' \
+  '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Repo contains docs and examples."}}' \
+  '{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122}}' \
+  '{"type":"turn.failed","error":{"message":"model overloaded"}}' \
+  | stream_view)"
+echo "$cx_out" | grep -q '→ exec: bash -lc ls'              || fail "stream_view: codex command not shown"
+echo "$cx_out" | grep -q '⋯ List the repo first.'           || fail "stream_view: codex reasoning not shown"
+echo "$cx_out" | grep -q 'Repo contains docs and examples.' || fail "stream_view: codex agent_message not shown"
+echo "$cx_out" | grep -q 'turn done (24k tok)'              || fail "stream_view: codex turn tokens not shown"
+echo "$cx_out" | grep -q '✖ turn failed: model overloaded'  || fail "stream_view: codex turn.failed not shown"
+
+# ── 12. --only installs the requested subset and nothing else ─────────────────
+mkdir -p "$TMP/only" && cd "$TMP/only"
+git init -q . && git commit -q --allow-empty -m init
+"$ROOT/install.sh" . --only workflows,claude >/dev/null
+[[ -e .github/workflows/automerge.yml ]] || fail "--only workflows: automerge.yml missing"
+[[ -e .github/workflows/ci.yml ]]        || fail "--only workflows: ci.yml missing"
+[[ -e .github/workflows/release.yml ]]   || fail "--only workflows: release.yml missing"
+[[ -e CLAUDE.md && -e .mcp.json && -e .claude/settings.json ]] || fail "--only claude: merge files missing"
+[[ -e run.sh ]]        && fail "--only: run.sh installed outside subset"
+[[ -e PLAN.md ]]       && fail "--only: PLAN.md installed outside subset"
+[[ -e opencode.json ]] && fail "--only: opencode.json installed outside subset"
+grep -q '^only=workflows,claude' .agentloop || fail "--only: subset not recorded in stamp"
+# invalid group must die
+"$ROOT/install.sh" . --only nonsense >/dev/null 2>&1 && fail "--only accepted an unknown group"
+# a later full --update fills in the rest
+"$ROOT/install.sh" . --update >/dev/null
+[[ -x run.sh && -e PLAN.md && -e opencode.json ]] || fail "--update after --only did not complete the install"
+
 echo "install-test OK"

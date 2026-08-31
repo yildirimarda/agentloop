@@ -1,8 +1,8 @@
 # Engine contract
 
 An "engine" is the coding agent CLI that `run.sh` drives inside the container.
-Two ship today — `opencode` (default) and `claude` — and this document is the
-contract a third one (e.g. Codex CLI) must satisfy.
+Three ship today — `opencode` (default), `claude`, and `codex` — and this
+document is the contract any further engine must satisfy.
 
 The guiding principle: **run.sh trusts no engine.** The loop's own guarantees —
 deterministic item selection, work-branch creation, PR-based verification,
@@ -16,7 +16,7 @@ inside the container, and (c) stream parseable events.
 |---|---|
 | The prompt | Single argv string (item text wrapped by `prompt_item`, or raw `--task` text) |
 | Model override | `-m/--model` flag → forwarded to the engine's own model flag |
-| Credentials | Environment: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `GH_TOKEN` |
+| Credentials | Environment: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GH_TOKEN` |
 | Full autonomy | Engine-specific flag/config — the container is the safety boundary, so "never ask" must be on |
 | Working dir | `/work` (the repo, bind-mounted; already on a fresh work branch) |
 
@@ -26,7 +26,14 @@ Current invocations (in `run_agent`):
 opencode run --format json [-m MODEL] "$prompt"
 claude -p "$prompt" --permission-mode bypassPermissions \
        --output-format stream-json --verbose [--model MODEL]
+codex exec --json --dangerously-bypass-approvals-and-sandbox \
+      [-c model="MODEL"] "$prompt"
 ```
+
+Codex note: it ships its own bubblewrap sandbox, which cannot start inside
+our container — and doesn't need to, because the container is already the
+boundary. Hence the bypass flag (same reasoning as `bypassPermissions` for
+Claude Code). Auth is `CODEX_API_KEY` (keychain entry `codex`).
 
 ## Output: NDJSON event stream on stdout
 
@@ -53,6 +60,13 @@ Reference shapes already handled:
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"},
                                           {"type":"text","text":"…"}]}}
 {"type":"result","total_cost_usd":0.42}
+
+// Codex: item envelopes + per-turn usage
+{"type":"item.started","item":{"type":"command_execution","command":"bash -lc ls","status":"in_progress"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"…"}}
+{"type":"item.completed","item":{"type":"reasoning","text":"…"}}
+{"type":"turn.completed","usage":{"input_tokens":24763,"output_tokens":122}}
+{"type":"turn.failed","error":{"message":"…"}}
 ```
 
 Adding an engine means extending two jq programs: `stream_view` (live view)
@@ -76,12 +90,13 @@ protections are engine-config:
 |---|---|---|
 | opencode | `opencode.json` → `permission` | glob deny rules (force push, push to main, terraform apply, workflow edits) |
 | claude | `.claude/settings.json` → `permissions.deny` | same rules, Claude Code syntax |
-| *(new)* | its own config file | must express the same deny set |
+| codex | — (no command-deny mechanism) | approval/sandbox modes only, no per-command globs. The GitHub-side layers carry the weight: the PAT cannot push workflows, branch protection blocks main. Treat codex as the least-guarded engine |
+| *(new)* | its own config file | must express the same deny set, or document why the outer layers suffice |
 
-The workflow contract reaches each engine differently: OpenCode reads
-`AGENTS.md` natively; Claude Code reads `CLAUDE.md`, which imports it
-(`@AGENTS.md`). A new engine needs an equivalent bridge so `AGENTS.md` stays
-the single source of truth.
+The workflow contract reaches each engine differently: OpenCode and Codex
+read `AGENTS.md` natively (Codex: git root down to cwd, concatenated);
+Claude Code reads `CLAUDE.md`, which imports it (`@AGENTS.md`). A new engine
+needs an equivalent bridge so `AGENTS.md` stays the single source of truth.
 
 ## Checklist for adding an engine
 

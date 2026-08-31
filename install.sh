@@ -20,6 +20,16 @@
 #   --dry-run            print what would happen, change nothing
 #   --check              report installed version vs the newest release tag,
 #                        change nothing
+#   --only GROUPS        install only a subset (comma-separated groups):
+#                          scripts    run.sh, setup-github.sh
+#                          workflows  automerge.yml, release.yml, ci.yml
+#                          config     opencode.json, Dockerfile.agent
+#                          plan       PLAN.md, AGENTS.md
+#                          claude     CLAUDE.md, .mcp.json, .claude/settings.json
+#                        e.g. --only workflows,claude — for repos that already
+#                        have parts of the setup. Housekeeping (stamp,
+#                        .gitignore) still runs; later full --update fills in
+#                        the rest.
 #   --uninstall          remove agentloop's managed files and the .agentloop
 #                        stamp; your files (PLAN.md, AGENTS.md, opencode.json,
 #                        Dockerfile.agent, ci.yml, release.yml) and the merged
@@ -61,6 +71,7 @@ UPDATE=0
 DRY=0
 CHECKMODE=0
 UNINSTALL=0
+ONLY=""
 MODEL=""
 SMALL_MODEL=""
 CONFLICTS=0
@@ -101,6 +112,23 @@ filehash() {
   else md5 -q "$1"; fi
 }
 
+# --only support: map each template file to a group; when ONLY is empty
+# everything is selected.
+file_group() {
+  case "$1" in
+    run.sh|setup-github.sh)                   echo scripts ;;
+    .github/workflows/*)                      echo workflows ;;
+    opencode.json|Dockerfile.agent)           echo config ;;
+    PLAN.md|AGENTS.md)                        echo plan ;;
+    CLAUDE.md|.mcp.json|.claude/settings.json) echo claude ;;
+    *)                                        echo other ;;
+  esac
+}
+selected() {
+  [[ -z "$ONLY" ]] && return 0
+  [[ ",$ONLY," == *",$(file_group "$1"),"* ]]
+}
+
 while (( $# )); do
   case "$1" in
     --ref)          REF="${2:?--ref needs a value}"; shift 2 ;;
@@ -110,6 +138,7 @@ while (( $# )); do
     --dry-run)      DRY=1; shift ;;
     --check)        CHECKMODE=1; shift ;;
     --uninstall)    UNINSTALL=1; shift ;;
+    --only)         ONLY="${2:?--only needs a comma-separated group list}"; shift 2 ;;
     --model)        MODEL="${2:?--model needs an id}"; shift 2 ;;
     --small-model)  SMALL_MODEL="${2:?--small-model needs an id}"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
@@ -117,6 +146,14 @@ while (( $# )); do
     *)              TARGET="$1"; shift ;;
   esac
 done
+
+if [[ -n "$ONLY" ]]; then
+  for g in ${ONLY//,/ }; do
+    case "$g" in scripts|workflows|config|plan|claude) : ;;
+      *) die "unknown --only group: '$g' (use scripts, workflows, config, plan, claude)" ;;
+    esac
+  done
+fi
 
 TARGET="${TARGET:-$PWD}"
 [[ -d "$TARGET" ]] || die "target directory not found: $TARGET"
@@ -376,12 +413,12 @@ copy_ci() {
   fi
 }
 
-for f in "${MANAGED_FILES[@]}"; do copy_managed "$f"; done
-for f in "${USER_FILES[@]}";    do copy_user "$f";    done
-copy_ci
-merge_claude_md
-merge_json ".mcp.json" "$MERGE_MCP"
-merge_json ".claude/settings.json" "$MERGE_SETTINGS"
+for f in "${MANAGED_FILES[@]}"; do if selected "$f"; then copy_managed "$f"; fi; done
+for f in "${USER_FILES[@]}";    do if selected "$f"; then copy_user "$f";    fi; done
+if selected ".github/workflows/ci.yml"; then copy_ci; fi
+if selected "CLAUDE.md"; then merge_claude_md; fi
+if selected ".mcp.json"; then merge_json ".mcp.json" "$MERGE_MCP"; fi
+if selected ".claude/settings.json"; then merge_json ".claude/settings.json" "$MERGE_SETTINGS"; fi
 
 # ── Housekeeping ──────────────────────────────────────────────────────────────
 if (( ! DRY )); then
@@ -397,12 +434,14 @@ if (( ! DRY )); then
     echo "ref=$REF_USED"
     echo "repo=$REPO"
     echo "installed=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    [[ -n "$ONLY" ]] && echo "only=$ONLY"
     for f in "${USER_FILES[@]}"; do
-      echo "hash:$f=$(filehash "$SRC/template/$f")"
+      if selected "$f"; then echo "hash:$f=$(filehash "$SRC/template/$f")"; fi
     done
   } > "$STAMP"
 
   if [[ -n "$MODEL" || -n "$SMALL_MODEL" ]]; then
+    [[ -f "$TARGET/opencode.json" ]] || die "--model set but opencode.json is not installed here (check --only groups)"
     command -v python3 >/dev/null || die "--model needs python3 on PATH"
     python3 - "$TARGET/opencode.json" "$MODEL" "$SMALL_MODEL" <<'PY'
 import json, sys
@@ -440,7 +479,9 @@ fi
 
 echo
 echo "Done. Remaining setup (skip what you've already done on this machine):"
-if grep -q CHANGE_ME "$TARGET/opencode.json" 2>/dev/null; then
+if [[ ! -f "$TARGET/opencode.json" ]]; then
+  echo "  1. opencode.json not installed (--only subset) — add the 'config' group later if needed"
+elif grep -q CHANGE_ME "$TARGET/opencode.json" 2>/dev/null; then
   echo "  1. Pick models: edit opencode.json, or re-run with"
   echo "       --model <vendor/model> --small-model <vendor/model>"
 else
@@ -454,6 +495,7 @@ echo "  5. Keychain (once per machine):"
 echo "       security add-generic-password -s openrouter -a \"\$USER\" -w 'sk-or-...'"
 echo "       security add-generic-password -s gh-agent   -a \"\$USER\" -w 'github_pat_...'"
 echo "       security add-generic-password -s anthropic  -a \"\$USER\" -w 'sk-ant-...'   # only for --engine claude"
+echo "       security add-generic-password -s codex      -a \"\$USER\" -w 'sk-...'       # only for --engine codex"
 echo "  6. ./setup-github.sh   (branch protection, auto-merge, labels)"
 echo "  7. ./run.sh --init \"<project description>\"   or write PLAN.md by hand"
 echo

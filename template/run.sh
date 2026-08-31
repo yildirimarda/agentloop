@@ -59,8 +59,9 @@ Modes
                             "gh-admin" keychain token (no host gh login needed)
 
 Options
-  -e, --engine NAME         opencode (default; free OpenRouter models) or
-                            claude (paid; Claude Code + Anthropic API key)
+  -e, --engine NAME         opencode (default; free OpenRouter models),
+                            claude (paid; Claude Code + Anthropic API key),
+                            or codex (paid; OpenAI Codex CLI + CODEX_API_KEY)
       --no-discover         forbid the agent from adding items to PLAN.md
       --max-growth N        abort if the plan grows by more than N items
                             over this run (default 10)
@@ -153,8 +154,8 @@ keychain() {
 }
 
 case "$ENGINE" in
-  opencode|claude) : ;;
-  *) die "unknown engine: '$ENGINE' (use opencode or claude)" ;;
+  opencode|claude|codex) : ;;
+  *) die "unknown engine: '$ENGINE' (use opencode, claude or codex)" ;;
 esac
 
 # ── Dry run ──────────────────────────────────────────────────────────────────
@@ -204,6 +205,7 @@ GH_RUN_TOKEN=""
 GH_AGENT_TOKEN=""
 OPENROUTER_KEY=""
 ANTHROPIC_KEY=""
+CODEX_KEY=""
 
 if [[ "$MODE" == "ghsetup" ]]; then
   # One-time repo administration needs an admin-capable token, deliberately
@@ -213,6 +215,9 @@ else
   GH_AGENT_TOKEN="$(keychain gh-agent)"
   if [[ "$ENGINE" == "claude" ]]; then
     ANTHROPIC_KEY="$(keychain anthropic)"
+    OPENROUTER_KEY="$(security find-generic-password -s openrouter -w 2>/dev/null || true)"
+  elif [[ "$ENGINE" == "codex" ]]; then
+    CODEX_KEY="$(keychain codex)"
     OPENROUTER_KEY="$(security find-generic-password -s openrouter -w 2>/dev/null || true)"
   else
     OPENROUTER_KEY="$(keychain openrouter)"
@@ -231,6 +236,7 @@ in_container() {
     -v agent-claude-home:/home/agent/.claude \
     -e OPENROUTER_API_KEY="$OPENROUTER_KEY" \
     -e ANTHROPIC_API_KEY="$ANTHROPIC_KEY" \
+    -e CODEX_API_KEY="$CODEX_KEY" \
     -e GH_TOKEN="${GH_RUN_TOKEN:-$GH_AGENT_TOKEN}" \
     -e GH_PROMPT_DISABLED=1 \
     -e GH_NO_UPDATE_NOTIFIER=1 \
@@ -295,6 +301,24 @@ stream_view() {
          | if .type == "tool_use" then "  → " + .name
            elif .type == "text" then ("  " + (.text | gsub("\n"; "\n  ")))
            else empty end)
+      # ── Codex events: item.* envelopes + turn.completed usage ──
+      elif .type == "item.started" and .item.type? == "command_execution" then
+        "  → exec: " + ((.item.command // "") | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
+      elif .type == "item.completed" then
+        ( .item
+          | if .type == "reasoning" then
+              ((.text // empty) | tostring | "  ⋯ " + gsub("[\\n\\r]+"; "\n  ⋯ "))
+            elif .type == "agent_message" then
+              ((.text // empty) | tostring | "  " + gsub("\n"; "\n  "))
+            elif .type == "command_execution" then empty
+            else "  → " + .type end )
+      elif .type == "turn.completed" then
+        ( ((.usage.input_tokens // 0) + (.usage.output_tokens // 0))
+          | select(. > 0)
+          | if . >= 1000 then "        · turn done (" + (. / 1000 | floor | tostring) + "k tok)"
+            else "        · turn done (" + tostring + " tok)" end )
+      elif .type == "turn.failed" then
+        "  ✖ turn failed" + ((.error.message? // empty) | tostring | if . == "" then "" else ": " + . end)
       else empty end' 2>/dev/null
   else
     cat
@@ -316,6 +340,14 @@ run_agent() {
       --permission-mode bypassPermissions \
       --output-format stream-json --verbose \
       ${MODEL:+--model "$MODEL"} | tee "$log" | stream_view
+  elif [[ "$ENGINE" == "codex" ]]; then
+    # Codex ships its own bubblewrap sandbox, which cannot start inside our
+    # container. The container IS the sandbox here, so bypass Codex's — the
+    # same reasoning as bypassPermissions for Claude Code.
+    in_container codex exec --json \
+      --dangerously-bypass-approvals-and-sandbox \
+      ${MODEL:+-c "model=\"$MODEL\""} \
+      "$prompt" | tee "$log" | stream_view
   else
     in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
   fi
@@ -329,9 +361,14 @@ run_agent() {
     {
       jq -r 'select(.type=="tool_use") | .part.tool // .tool // .name // empty' "$log" 2>/dev/null
       jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name // empty' "$log" 2>/dev/null
+      jq -r 'select(.type=="item.completed") | .item.type
+             | select(. != "agent_message" and . != "reasoning")' "$log" 2>/dev/null
     } | sed 's/^/    /' | sort | uniq -c | sort -rn || true
     # Totals: OpenCode reports per-step tokens; Claude Code reports cost.
     jq -sr '[.[] | select(.type=="step_finish") | .part.tokens.total // 0] | add
+            | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
+    jq -sr '[.[] | select(.type=="turn.completed")
+             | (.usage.input_tokens // 0) + (.usage.output_tokens // 0)] | add
             | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
     jq -r 'select(.type=="result") | .total_cost_usd? // empty
            | "  session cost: $" + (.|tostring)' "$log" 2>/dev/null | tail -1 || true
