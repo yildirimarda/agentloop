@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/yildirimarda/agentloop/compare/v0.12.0...v0.12.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* raise shellcheck severity from error to warning in CI and fix SC2164 finding ([#18](https://github.com/yildirimarda/agentloop/issues/18)) ([0ba93fa](https://github.com/yildirimarda/agentloop/commit/0ba93fa80d5ff3a8d3fb4d3971bbf40a8cbeead3))
+
 ## [0.12.0](https://github.com/yildirimarda/agentloop/compare/v0.11.1...v0.12.0) (2026-08-31)
 
 
