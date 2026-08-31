@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/yildirimarda/agentloop/compare/v0.11.1...v0.12.0) (2026-08-31)
+
+
+### Features
+
+* auto-replan on plan completion; installer --check/--uninstall; engine contract docs; update-diff summary; parser fixture tests ([1c99ed1](https://github.com/yildirimarda/agentloop/commit/1c99ed1bc3ebc3fd028e05a729fd2d46f6f304c7))
+* codex engine, installer --only, shellcheck in agent image ([dcf3075](https://github.com/yildirimarda/agentloop/commit/dcf307524c6e6dae92d11e2d336d449cca6c8eaf))
+
 ## [0.11.1](https://github.com/yildirimarda/agentloop/compare/v0.11.0...v0.11.1) (2026-08-31)
 
 
