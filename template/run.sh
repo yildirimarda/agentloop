@@ -264,13 +264,18 @@ stream_view() {
       fromjson? |
       # ── OpenCode events: payload lives under .part ──
       if .type == "tool_use" then
-        "  → " + (.part.tool // .tool // .name // "tool")
-        + ( (.part.state.input // {}) as $in
-            | if $in.command  then ": " + ($in.command | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
-              elif $in.filePath then ": " + ($in.filePath | tostring)
-              elif $in.pattern  then ": " + ($in.pattern | tostring | .[0:80])
-              elif $in.question then ": " + ($in.question | tostring | .[0:100])
-              else "" end )
+        # The model'\''s reasoning for this step rides along in provider
+        # metadata — print it first, then the action itself.
+        ( ( .part.metadata.openrouter.reasoning_details[]?
+            | (.text // empty) | tostring
+            | "  ⋯ " + gsub("[\\n\\r]+"; "\n  ⋯ ") ),
+          ( "  → " + (.part.tool // .tool // .name // "tool")
+            + ( (.part.state.input // {}) as $in
+                | if $in.command  then ": " + ($in.command | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
+                  elif $in.filePath then ": " + ($in.filePath | tostring)
+                  elif $in.pattern  then ": " + ($in.pattern | tostring | .[0:80])
+                  elif $in.question then ": " + ($in.question | tostring | .[0:100])
+                  else "" end ) ) )
       elif .type == "text" then
         ((.part.text // .text // empty) | tostring | "  " + gsub("\n"; "\n  "))
       elif .type == "step_finish" then
@@ -329,7 +334,11 @@ run_agent() {
   return "$rc"
 }
 
-made_commits() { git log --oneline origin/main..HEAD 2>/dev/null | grep -q .; }
+# Local evidence only — the agent commits inside the container, and the
+# host's view of refs on a macOS bind mount can lag those writes, so a false
+# negative here must never be treated as authoritative. GitHub (a PR existing
+# for the branch) is the ground truth; this is the fallback diagnostic.
+made_commits() { [[ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]]; }
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
 
 # Branch creation is deterministic work, so bash does it — the agent starts
@@ -622,10 +631,10 @@ case "$MODE" in
     graph_sync
     new_work_branch "chore/plan-draft" ""
     run_agent "$(prompt_init)"; rc=$?
-    made_commits || abandon_work_branch
+    pr="$(current_pr || true)"
+    [[ -n "$pr" ]] || made_commits || abandon_work_branch
     echo
-    if made_commits; then
-      pr="$(current_pr || true)"
+    if [[ -n "$pr" ]] || made_commits; then
       pr_url="$(gh_c pr view "${pr:-}" --json url -q .url 2>/dev/null || true)"
       echo "PLAN.md drafted${pr:+ in PR #$pr}."
       echo
@@ -641,7 +650,7 @@ case "$MODE" in
     graph_sync
     new_work_branch "chore/replan" ""
     run_agent "$(prompt_replan)"; rc=$?
-    made_commits || abandon_work_branch
+    [[ -n "$(current_pr || true)" ]] || made_commits || abandon_work_branch
     exit "$rc" ;;
   task)
     [[ -n "$ARG_TEXT" ]] || die "--task needs text"
@@ -664,13 +673,13 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
       new_work_branch "task" "$ARG_TEXT"
     fi
     run_agent "$ARG_TEXT"; rc=$?
-    if ! made_commits; then
-      echo "  no commits — the agent wrote nothing"
+    pr="$(current_pr || true)"
+    if [[ -z "$pr" ]] && ! made_commits; then
+      echo "  no PR opened, no commits visible — the agent wrote nothing"
       abandon_work_branch
       exit "$rc"
     fi
-    git log --oneline origin/main..HEAD | sed 's/^/  /'
-    pr="$(current_pr || true)"
+    git log --oneline origin/main..HEAD 2>/dev/null | sed 's/^/  /'
     if [[ -n "$pr" ]]; then
       info "PR #$pr opened"
       if (( WAIT )); then
@@ -741,17 +750,18 @@ for (( i = 1; i <= COUNT; i++ )); do
   new_work_branch "agent" "$item"
   run_agent "$(prompt_item "$item")"
 
-  if ! made_commits; then
-    echo
-    echo "STOPPING: no commits were made. The model may be failing at tool"
-    echo "calls — look at the tool list above. If there are no 'bash' calls,"
-    echo "change the model in opencode.json."
-    abandon_work_branch
-    exit 1
-  fi
-
+  # Verify against GitHub first: a PR for this branch = work definitely
+  # happened, whatever the local ref view claims.
   pr="$(current_pr || true)"
   if [[ -z "$pr" ]]; then
+    if ! made_commits; then
+      echo
+      echo "STOPPING: no PR was opened and no commits are visible. The model"
+      echo "may be failing at tool calls — look at the tool list above. If"
+      echo "there are no 'bash' calls, change the model in opencode.json."
+      abandon_work_branch
+      exit 1
+    fi
     echo
     echo "STOPPING: commits exist but no pull request was opened."
     echo "Open it manually, or re-run to let the agent retry."
