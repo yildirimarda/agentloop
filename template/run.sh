@@ -16,12 +16,30 @@ COUNT=1
 WAIT=1
 TIMEOUT_MIN=20
 CI_RETRIES=1
+
 MODEL=""
 USE_GRAPH=1
 DISCOVER=1
 MAX_GROWTH=10
 ARG_TEXT=""
 ANTHROPIC_KEY=""
+
+# ── Local per-machine overrides: .agentloop.local (gitignored) ───────────────
+# Change model/engine without touching git. KEY=VALUE lines, no quotes:
+#   MODEL=openrouter/vendor/model
+#   ENGINE=opencode          (or claude)
+#   CI_RETRIES=5
+#   TIMEOUT_MIN=40
+# Precedence: CLI flags > this file > committed defaults (opencode.json).
+if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
+  while IFS='=' read -r _k _v; do
+    [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
+    case "$_k" in
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE)
+        printf -v "$_k" '%s' "$_v" ;;
+    esac
+  done < "$REPO_DIR/.agentloop.local"
+fi
 
 usage() {
 cat <<'EOF'
@@ -54,6 +72,10 @@ Options
       --no-graph            skip the Graphify index step
       --image NAME          container image (default "agent")
   -h, --help                this
+
+Per-machine defaults (no git involved): put KEY=VALUE lines in
+.agentloop.local (gitignored) — e.g. MODEL=openrouter/vendor/model,
+ENGINE=claude, CI_RETRIES=5. CLI flags still win.
 
 Examples
   ./run.sh --init "A CLI that validates CSV exports and loads them to Postgres"
@@ -240,11 +262,29 @@ stream_view() {
   if command -v jq >/dev/null 2>&1; then
     jq --unbuffered -Rr '
       fromjson? |
-      if .type == "tool_use" then "  → " + (.tool // .name // "tool")
+      # ── OpenCode events: payload lives under .part ──
+      if .type == "tool_use" then
+        "  → " + (.part.tool // .tool // .name // "tool")
+        + ( (.part.state.input // {}) as $in
+            | if $in.command  then ": " + ($in.command | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
+              elif $in.filePath then ": " + ($in.filePath | tostring)
+              elif $in.pattern  then ": " + ($in.pattern | tostring | .[0:80])
+              elif $in.question then ": " + ($in.question | tostring | .[0:100])
+              else "" end )
+      elif .type == "text" then
+        ((.part.text // .text // empty) | tostring | "  " + gsub("\n"; "\n  "))
+      elif .type == "step_finish" then
+        ( .part.tokens.total // empty
+          | if . >= 1000 then "        · step done (" + (. / 1000 | floor | tostring) + "k tok)"
+            else "        · step done (" + tostring + " tok)" end )
       elif .type == "error" then
         "  ✖ " + ((.error.message? // .error // .message // "error") | tostring)
+      # ── Claude Code events: assistant messages with content blocks ──
       elif .type == "assistant" then
-        (.message.content[]? | select(.type == "tool_use") | "  → " + .name)
+        (.message.content[]?
+         | if .type == "tool_use" then "  → " + .name
+           elif .type == "text" then ("  " + (.text | gsub("\n"; "\n  ")))
+           else empty end)
       else empty end' 2>/dev/null
   else
     cat
@@ -274,13 +314,15 @@ run_agent() {
   echo
   if command -v jq >/dev/null 2>&1 && [[ -s "$log" ]]; then
     echo "  tools used:"
-    # Two shapes: OpenCode emits flat {"type":"tool_use",...} events; Claude
-    # Code nests tool_use blocks inside assistant messages.
+    # OpenCode nests the payload under .part; Claude Code nests tool_use
+    # blocks inside assistant messages.
     {
-      jq -r 'select(.type=="tool_use") | .tool // .name // empty' "$log" 2>/dev/null
+      jq -r 'select(.type=="tool_use") | .part.tool // .tool // .name // empty' "$log" 2>/dev/null
       jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name // empty' "$log" 2>/dev/null
     } | sed 's/^/    /' | sort | uniq -c | sort -rn || true
-    # Claude Code's final result event carries the session cost — surface it.
+    # Totals: OpenCode reports per-step tokens; Claude Code reports cost.
+    jq -sr '[.[] | select(.type=="step_finish") | .part.tokens.total // 0] | add
+            | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
     jq -r 'select(.type=="result") | .total_cost_usd? // empty
            | "  session cost: $" + (.|tostring)' "$log" 2>/dev/null | tail -1 || true
   fi
