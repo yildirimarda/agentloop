@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/yildirimarda/agentloop/compare/v0.11.0...v0.11.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* verify work via the PR on GitHub, not lagging local refs; stream model reasoning in live view ([95874a9](https://github.com/yildirimarda/agentloop/commit/95874a98229b0f1d4996ea3f7d03cf0f3ba9ff3f))
+
 ## [0.11.0](https://github.com/yildirimarda/agentloop/compare/v0.10.0...v0.11.0) (2026-08-31)
 
 
