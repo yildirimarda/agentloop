@@ -15,7 +15,10 @@ work you discovered along the way, open a pull request, and stop.
    Fix failures until everything is green. If you changed dependencies
    (pyproject.toml or equivalent), refresh the lockfile (`uv lock`) and
    COMMIT it — CI rejects a stale lockfile.
-5. In `PLAN.md`, change that item's `- [ ]` to `- [x]`.
+5. In `PLAN.md`, change that item's `- [ ]` to `- [x]`. The tick travels
+   with your branch: it reaches `main` only if this PR merges, so ticking
+   here never falsely marks unfinished work as done. If you end the session
+   without completing the item, revert the tick before pushing.
 6. Record any new work you discovered — see "Growing the plan" below.
 7. Commit using Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`,
    `refactor:`, `test:`. Small, single-purpose commits.

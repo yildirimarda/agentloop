@@ -472,7 +472,9 @@ CI failed on pull request #$2, which implements this plan item:
     $1
 
 You are already on the PR's branch. Stay on it — do not create a new branch
-and do not touch main. Do this:
+and do not touch main. PLAN.md on this branch may already show the item as
+[x] — that is expected (an earlier session ticked it; the tick only reaches
+main if this PR merges). Do NOT modify PLAN.md in this session. Do this:
 
 1. Diagnose the failure from the log tail below. If it is unclear, reproduce
    it locally with the project's lint/test commands.
