@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/yildirimarda/agentloop/compare/v0.12.2...v0.12.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* tell CI-fix sessions the plan tick is expected; document tick-travels-with-branch semantics ([767ac6b](https://github.com/yildirimarda/agentloop/commit/767ac6b4385780c4a1f8eb3992543a0548698ee2))
+
 ## [0.12.2](https://github.com/yildirimarda/agentloop/compare/v0.12.1...v0.12.2) (2026-08-31)
 
 
