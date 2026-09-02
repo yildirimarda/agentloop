@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/yildirimarda/agentloop/compare/v0.14.0...v0.15.0) (2026-09-02)
+
+
+### Features
+
+* move plan-item ticking from the model to the loop — deterministic, forgettable no more ([46f7133](https://github.com/yildirimarda/agentloop/commit/46f71330e85535e8d46e4cfa0e015b18b3935c9e))
+
 ## [0.14.0](https://github.com/yildirimarda/agentloop/compare/v0.13.2...v0.14.0) (2026-09-02)
 
 
