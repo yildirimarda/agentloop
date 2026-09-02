@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/yildirimarda/agentloop/compare/v0.13.1...v0.13.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* retry CI log fetch, name the failing jobs, and teach fix sessions to reproduce via ci.yml commands first ([2ab8be7](https://github.com/yildirimarda/agentloop/commit/2ab8be75a9b53764341166853bcef37ad6f1ab98))
+
 ## [0.13.1](https://github.com/yildirimarda/agentloop/compare/v0.13.0...v0.13.1) (2026-09-02)
 
 
