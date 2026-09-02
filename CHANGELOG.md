@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/yildirimarda/agentloop/compare/v0.13.2...v0.14.0) (2026-09-02)
+
+
+### Features
+
+* token budget - compaction pruning, tool output caps, cache pinning, output discipline rules, optional headroom proxy ([f9650ea](https://github.com/yildirimarda/agentloop/commit/f9650ea34c0a7f23c80d4395b30cce330a296cf5))
+
 ## [0.13.2](https://github.com/yildirimarda/agentloop/compare/v0.13.1...v0.13.2) (2026-09-02)
 
 
