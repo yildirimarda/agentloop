@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/yildirimarda/agentloop/compare/v0.12.3...v0.13.0) (2026-09-02)
+
+
+### Features
+
+* --ambitious flag adds a product-vision pass to replan ([df28bd4](https://github.com/yildirimarda/agentloop/commit/df28bd4fe1a1fa64179ca3cd033d139ed12d2d35))
+
 ## [0.12.3](https://github.com/yildirimarda/agentloop/compare/v0.12.2...v0.12.3) (2026-09-01)
 
 
