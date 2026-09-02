@@ -479,7 +479,11 @@ CI failed on pull request #$2, which implements this plan item:
 You are already on the PR's branch. Stay on it — do not create a new branch
 and do not touch main. PLAN.md on this branch may already show the item as
 [x] — that is expected (an earlier session ticked it; the tick only reaches
-main if this PR merges). Do NOT modify PLAN.md in this session. Do this:
+main if this PR merges). Do NOT modify PLAN.md in this session, with one
+exception: if you merge main into this branch and PLAN.md conflicts, resolve
+by taking MAIN's version of every line except this PR's own item, which
+keeps its [x]. Never let a conflict resolution untick someone else's item.
+Do this:
 
 1. Diagnose the failure from the log tail below. If it is unclear, reproduce
    it locally with the project's lint/test commands.
@@ -891,6 +895,23 @@ for (( i = 1; i <= COUNT; i++ )); do
   git_pull_c
   # Remote branch is deleted by delete-branch-on-merge; tidy the local copy too.
   [[ -n "$head_branch" ]] && git branch -D "$head_branch" >/dev/null 2>&1 || true
+
+  # Ticks must never regress: anything done before this iteration must still
+  # be done. A revert here almost always means the PR's branch was stale and
+  # a PLAN.md merge conflict got resolved against main.
+  if [[ -f "$SNAP" ]]; then
+    reverted="$(comm -23 <(grep -E '^[[:space:]]*- \[[xX]\]' "$SNAP" | sort) \
+                         <(grep -E '^[[:space:]]*- \[[xX]\]' "$PLAN" | sort) 2>/dev/null || true)"
+    if [[ -n "$reverted" ]]; then
+      echo
+      echo "WARNING: previously ticked item(s) were REVERTED by this merge —"
+      echo "almost certainly a PLAN.md merge conflict resolved wrongly on a"
+      echo "stale branch. The code for these is already on main; restore the"
+      echo "ticks (edit PLAN.md on main, commit, push) before continuing:"
+      printf '%s\n' "$reverted" | sed 's/^/    /'
+      exit 1
+    fi
+  fi
 
   after_remaining="$(plan_remaining)"
   after_done="$(plan_done_count)"

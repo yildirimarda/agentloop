@@ -22,7 +22,10 @@ work you discovered along the way, open a pull request, and stop.
 6. Record any new work you discovered — see "Growing the plan" below.
 7. Commit using Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`,
    `refactor:`, `test:`. Small, single-purpose commits.
-8. `git push -u origin HEAD`
+8. `git push -u origin HEAD`. If the push is rejected because `main` moved,
+   merge `origin/main` into your branch. If `PLAN.md` conflicts, take main's
+   version of every line except your own item's tick — never let a conflict
+   resolution untick another item (its code is already merged on main).
 9. `gh pr create --fill --label automated`
 10. **STOP.** Do not wait for CI, do not merge, do not cut a release, do not
     poll the PR, do not start the next item. GitHub handles everything after
