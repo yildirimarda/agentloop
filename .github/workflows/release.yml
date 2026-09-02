@@ -30,4 +30,9 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
+          # A PAT (AUTOMERGE_TOKEN), not GITHUB_TOKEN: PRs opened by the
+          # default token don't trigger their own CI (GitHub's recursion
+          # guard) and can land in the "awaiting maintainer approval" queue —
+          # required checks then block the release PR forever.
+          token: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
           release-type: simple
