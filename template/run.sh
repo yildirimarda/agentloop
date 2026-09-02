@@ -426,6 +426,20 @@ new_work_branch() {
 }
 WORK_BRANCH=""
 
+# Ticking is deterministic, so bash does it — models forget step 4 of an
+# 8-step checklist after a million tokens of context. The tick is committed
+# on the WORK BRANCH, so it keeps the property that matters: it reaches main
+# only if the PR merges; a dead PR takes its tick to the grave.
+tick_item_on_branch() {
+  local item="$1" ln
+  [[ -n "$item" && -f "$PLAN" ]] || return 0
+  ln="$(grep -nF -- "- [ ] $item" "$PLAN" | head -1 | cut -d: -f1)"
+  [[ -n "$ln" ]] || return 0
+  sed -i.bak "${ln}s/- \[ \]/- [x]/" "$PLAN" && rm -f "$PLAN.bak"
+  git add "$PLAN"
+  git commit -q -m "chore: tick plan item (loop-managed; lands only when this PR merges)" || true
+}
+
 # After a failed/empty session, try to leave the repo back on a clean main.
 # Only safe when the tree is clean; otherwise print exact cleanup commands —
 # never destroy uncommitted work automatically.
@@ -718,7 +732,9 @@ Do this:
    unrelated code.
 2. Write or extend tests that prove it works.
 3. Run the project's lint and test commands. Fix failures until green.
-4. In PLAN.md, change that item's "- [ ]" to "- [x]".
+4. PLAN.md on this branch already shows the item as "- [x]" — the loop
+   ticked it when it created the branch. Leave it. Only if you finish this
+   session WITHOUT completing the item, revert it to "- [ ]".
 5. $(discovery_clause)
 6. Follow the workflow in AGENTS.md: branch, commit, push, and open a pull
    request with the "automated" label.
@@ -881,6 +897,7 @@ for (( i = 1; i <= COUNT; i++ )); do
 
   graph_sync
   new_work_branch "agent" "$item"
+  tick_item_on_branch "$item"
   run_agent "$(prompt_item "$item")"
 
   # Verify against GitHub first: a PR for this branch = work definitely
