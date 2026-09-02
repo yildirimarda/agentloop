@@ -467,7 +467,16 @@ ci_fail_log() {
         --jq '[.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out")][0].id' \
         2>/dev/null || true)"
   [[ -n "$rid" && "$rid" != "null" ]] || return 0
-  gh_c run view "$rid" --log-failed 2>/dev/null | tail -60
+  # Failed job names first — a bare log tail doesn't say WHICH check died.
+  gh_c run view "$rid" 2>/dev/null | grep -E "^X|✗|failure" | head -10
+  # Log archives lag behind the failure conclusion — retry briefly.
+  local out="" i
+  for i in 1 2 3; do
+    out="$(gh_c run view "$rid" --log-failed 2>/dev/null | tail -80)"
+    [[ -n "$out" ]] && break
+    sleep 10
+  done
+  printf '%s\n' "$out"
 }
 
 prompt_ci_fix() {
@@ -485,8 +494,12 @@ by taking MAIN's version of every line except this PR's own item, which
 keeps its [x]. Never let a conflict resolution untick someone else's item.
 Do this:
 
-1. Diagnose the failure from the log tail below. If it is unclear, reproduce
-   it locally with the project's lint/test commands.
+1. Diagnose the failure from the log tail below. If the log is missing or
+   unclear, do NOT dig through git history or PR metadata — open
+   .github/workflows/ci.yml and run every check command it defines (lint,
+   format check, type check, tests), in order, exactly as written there.
+   One of them will fail exactly like CI did. That is always the fastest
+   reproduction.
 2. Fix the CODE. Never weaken, skip or delete tests to get green. If a
    lockfile check failed, regenerate the lockfile with the project's
    dependency tool (e.g. uv lock) and commit it.
