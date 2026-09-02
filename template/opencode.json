@@ -1,9 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
-
   "model": "openrouter/CHANGE_ME/main-model",
   "small_model": "openrouter/CHANGE_ME/cheap-model",
-
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 12000
+  },
+  "tool_output": {
+    "max_lines": 500,
+    "max_bytes": 20480
+  },
   "permission": {
     "*": "allow",
     "bash": {
@@ -20,11 +27,15 @@
       ".github/workflows/**": "deny"
     }
   },
-
   "mcp": {
     "graphify": {
       "type": "local",
-      "command": ["/opt/graphify/bin/python", "-m", "graphify.serve", "graphify-out/graph.json"],
+      "command": [
+        "/opt/graphify/bin/python",
+        "-m",
+        "graphify.serve",
+        "graphify-out/graph.json"
+      ],
       "enabled": true,
       "timeout": 30000,
       "environment": {
@@ -32,11 +43,11 @@
       }
     }
   },
-
   "provider": {
     "openrouter": {
       "options": {
-        "timeout": 600000
+        "timeout": 600000,
+        "setCacheKey": true
       }
     }
   }

@@ -55,6 +55,7 @@ You write the plan once — or have the agent draft it — then run `./run.sh`.
   - [Graphify: why token usage stays low](#graphify-why-token-usage-stays-low)
   - [Why Docker means less configuration](#why-docker-means-less-configuration)
   - [Division of responsibility](#division-of-responsibility)
+  - [Token and context budget](#token-and-context-budget)
   - [How releases work](#how-releases-work)
   - [Notes](#notes)
   - [Every stop message and what to do](#every-stop-message-and-what-to-do)
@@ -1112,6 +1113,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `--ci-retries N` | 1 | On a red PR, feed the failing CI log back to the agent on the same branch, up to N times (0 = off) |
 | `--auto-replan` | off | When the plan runs out mid-loop, run one replan session (plan PR for your review) instead of just stopping |
 | `--ambitious` | off | With `--replan`: adds a vision pass — the agent proposes 5-10 genuinely new product features under a "Proposed Features (vision)" milestone, for you to prune in the plan PR |
+| `--headroom` | off | (opencode engine) route the session through an in-container Headroom proxy that compresses old tool outputs before they reach the model. Persist with `HEADROOM=1` in `.agentloop.local` |
 | `--no-wait` | off | Rarely — `main` goes stale and items can repeat |
 | `--timeout N` | 20 | CI takes longer than 20 minutes |
 | `-m ID` | from config | Trying a different model for one run |
@@ -1328,6 +1330,41 @@ stop on failure
 
 Everything deterministic lives in bash or GitHub. The agent does the parts that
 genuinely need a model: writing code, and noticing what else the project needs.
+
+---
+
+## Token and context budget
+
+On OpenRouter's free tier the scarce resource is REQUESTS (20/min, 1000/day),
+not tokens — tokens cost $0. Bloated context still hurts, indirectly: it
+forces OpenCode's automatic compaction (summarisation = lost detail + extra
+requests), slows every step, and can overflow the model's window entirely.
+The defence has four layers:
+
+1. **Graphify** (already installed): the agent queries a knowledge graph over
+   MCP instead of reading whole files.
+2. **opencode.json settings** (in the template): `compaction.prune: true`
+   drops old tool outputs from the context instead of carrying them forever;
+   `tool_output: {max_lines: 500, max_bytes: 20480}` truncates giant command
+   outputs at the source (the full text is saved to disk in the container and
+   the agent can grep it if needed); `setCacheKey: true` pins OpenRouter
+   routing to one provider so prompt caches stay warm.
+3. **AGENTS.md output discipline**: the agent is instructed to run tests
+   quietly, tail long outputs, and grep before reading.
+4. **Headroom (optional, `--headroom`)**: an in-container proxy that
+   compresses old tool outputs (locally, reversibly — nothing leaves the
+   machine) before each request. Adds a moving part; measure first — enable
+   it if the "session tokens" line in run summaries keeps growing past the
+   model's context size, i.e. compaction is triggering anyway. Requires a
+   rebuilt image (`docker build -t agent -f Dockerfile.agent .`).
+
+Paid engines cache automatically — nothing to configure: Claude Code applies
+Anthropic prompt caching in headless `-p` mode by itself (cache reads are
+~10x cheaper, this is where the real money is saved), and Codex gets OpenAI's
+automatic prefix caching for prompts over ~1-2k tokens. What YOU control on
+paid engines is prefix stability: `AGENTS.md` and `CLAUDE.md` are the cached
+prefix, so keep them lean and change them rarely — every edit invalidates
+the cache once.
 
 ---
 

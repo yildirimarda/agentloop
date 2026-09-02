@@ -23,6 +23,7 @@ DISCOVER=1
 MAX_GROWTH=10
 AUTO_REPLAN=0
 AMBITIOUS=0
+HEADROOM=0
 ARG_TEXT=""
 ANTHROPIC_KEY=""
 
@@ -37,7 +38,7 @@ if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -77,6 +78,11 @@ Options
       --ambitious           with --replan: besides auditing, propose real NEW
                             features from a product perspective, under a
                             "Proposed Features (vision)" milestone
+      --headroom            (opencode engine only) route the session through a
+                            local Headroom proxy in the container: compresses
+                            old tool outputs before they reach the model,
+                            delaying context compaction. Persist with
+                            HEADROOM=1 in .agentloop.local
   -m, --model ID            override the model from opencode.json
       --no-graph            skip the Graphify index step
       --image NAME          container image (default "agent")
@@ -118,6 +124,7 @@ while (( $# )); do
     --ci-retries)   CI_RETRIES="${2:?--ci-retries needs a number}"; shift 2 ;;
     --auto-replan)  AUTO_REPLAN=1; shift ;;
     --ambitious)    AMBITIOUS=1; shift ;;
+    --headroom)     HEADROOM=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
     --no-graph)     USE_GRAPH=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
@@ -353,6 +360,21 @@ run_agent() {
       --dangerously-bypass-approvals-and-sandbox \
       ${MODEL:+-c "model=\"$MODEL\""} \
       "$prompt" | tee "$log" | stream_view
+  elif (( HEADROOM )); then
+    # Headroom: an in-container OpenAI-compatible proxy that compresses old
+    # tool outputs (locally, reversibly) before they reach the model. OpenCode
+    # is pointed at it via OPENCODE_CONFIG_CONTENT (a runtime override — the
+    # project's opencode.json is untouched); the proxy forwards the
+    # Authorization header to OpenRouter, so it needs no key of its own.
+    info "headroom: compressing context via local proxy (profile: coding)"
+    in_container bash -c '
+      headroom proxy --host 127.0.0.1 --port 8787 \
+        --openai-api-url https://openrouter.ai/api >/tmp/headroom.log 2>&1 &
+      for _ in $(seq 1 40); do
+        curl -sf http://127.0.0.1:8787/health >/dev/null 2>&1 && break; sleep 0.5
+      done
+      export OPENCODE_CONFIG_CONTENT="{\"provider\":{\"openrouter\":{\"options\":{\"baseURL\":\"http://127.0.0.1:8787/v1\"}}}}"
+      exec "$@"' _ opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
   else
     in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
   fi

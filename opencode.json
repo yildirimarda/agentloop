@@ -37,8 +37,18 @@
   "provider": {
     "openrouter": {
       "options": {
-        "timeout": 600000
+        "timeout": 600000,
+        "setCacheKey": true
       }
     }
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 12000
+  },
+  "tool_output": {
+    "max_lines": 500,
+    "max_bytes": 20480
   }
 }

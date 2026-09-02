@@ -49,6 +49,13 @@ RUN npm install -g @anthropic-ai/claude-code
 # Codex CLI (optional third engine: ./run.sh --engine codex)
 RUN npm install -g @openai/codex
 
+# Headroom (optional context-compression proxy: ./run.sh --headroom).
+# Compresses tool outputs locally before they reach the model; lossless-
+# retrievable, prompt-cache-aware. Isolated in its own venv like graphify.
+RUN python3 -m venv /opt/headroom \
+    && /opt/headroom/bin/pip install --no-cache-dir "headroom-ai[proxy]" \
+    && ln -s /opt/headroom/bin/headroom /usr/local/bin/headroom
+
 # ── Graphify: codebase knowledge graph, cuts token usage substantially ───────
 # PyPI package name is "graphifyy" (double y) — plain "graphify" on PyPI is a
 # different, unaffiliated project. The [mcp] extra ships the MCP server the

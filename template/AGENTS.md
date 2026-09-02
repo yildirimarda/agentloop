@@ -83,6 +83,23 @@ Two caveats: edges marked `INFERRED` are model-generated guesses, so verify
 them against the real file before relying on them. And the graph reflects the
 last index, so if you just created a file, the graph does not know about it yet.
 
+## Output discipline (token budget)
+
+Every byte a command prints is re-sent to the model on every following step.
+Waste here compounds into slower sessions, forced context compaction (which
+loses detail), and burned request quota.
+
+- Run tests quietly and clip the output: `uv run pytest -q ... 2>&1 | tail -30`.
+  Only re-run verbosely for the ONE failing test you are debugging.
+- Never dump whole files. `grep -n` to locate, then read only the relevant
+  range. Ask the knowledge graph before opening any file at all.
+- Never print whole logs, lockfiles, or generated artifacts. `tail`, `head`,
+  `wc -l` and targeted `grep` answer almost every question.
+- Prefer one command that answers the question over several exploratory ones.
+- Performance tests: never assert absolute wall-clock durations — they flake
+  on shared CI runners. Assert relative ratios (min-of-runs at microsecond
+  scale) or gate absolute checks behind an opt-in env var.
+
 ## Prohibited
 
 - No direct pushes to `main` or `release/*`.

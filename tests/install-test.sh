@@ -224,4 +224,17 @@ grep -q '^only=workflows,claude' .agentloop || fail "--only: subset not recorded
 "$ROOT/install.sh" . --update >/dev/null
 [[ -x run.sh && -e PLAN.md && -e opencode.json ]] || fail "--update after --only did not complete the install"
 
+# ── 13. Token-budget config landed intact ─────────────────────────────────────
+cd "$TMP/proj"
+grep -q -- "--headroom" run.sh || fail "run.sh lacks --headroom flag"
+grep -q "OPENCODE_CONFIG_CONTENT" run.sh || fail "run.sh lacks headroom config override"
+python3 -c "
+import json
+d = json.load(open('opencode.json'))
+assert d['compaction']['prune'] is True
+assert d['tool_output']['max_lines'] == 500
+assert d['provider']['openrouter']['options']['setCacheKey'] is True
+" || fail "opencode.json token-budget settings missing"
+grep -q "Output discipline" AGENTS.md || fail "AGENTS.md lacks output-discipline section"
+
 echo "install-test OK"
