@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/yildirimarda/agentloop/compare/v0.13.0...v0.13.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **ci:** open release PRs with a PAT so their checks run without maintainer approval ([7125246](https://github.com/yildirimarda/agentloop/commit/712524603c00ec813789c10e984c3ae5fce4d37b))
+* detect plan-tick regressions after merge; teach conflict resolution to never untick other items ([dc6105b](https://github.com/yildirimarda/agentloop/commit/dc6105bd8c9047382a3afe462185965aad0435ee))
+
 ## [0.13.0](https://github.com/yildirimarda/agentloop/compare/v0.12.3...v0.13.0) (2026-09-02)
 
 
