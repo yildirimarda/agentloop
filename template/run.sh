@@ -6,7 +6,7 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$REPO_DIR" || exit
+cd "$REPO_DIR"
 
 PLAN="PLAN.md"
 IMAGE="${IMAGE:-agent}"
@@ -22,6 +22,7 @@ USE_GRAPH=1
 DISCOVER=1
 MAX_GROWTH=10
 AUTO_REPLAN=0
+AMBITIOUS=0
 ARG_TEXT=""
 ANTHROPIC_KEY=""
 
@@ -73,6 +74,9 @@ Options
       --auto-replan         when the plan runs out mid-loop, run one replan
                             session so the agent proposes the next wave (as a
                             plan-labelled PR you review), then stop
+      --ambitious           with --replan: besides auditing, propose real NEW
+                            features from a product perspective, under a
+                            "Proposed Features (vision)" milestone
   -m, --model ID            override the model from opencode.json
       --no-graph            skip the Graphify index step
       --image NAME          container image (default "agent")
@@ -113,6 +117,7 @@ while (( $# )); do
     --timeout)      TIMEOUT_MIN="${2:?--timeout needs minutes}"; shift 2 ;;
     --ci-retries)   CI_RETRIES="${2:?--ci-retries needs a number}"; shift 2 ;;
     --auto-replan)  AUTO_REPLAN=1; shift ;;
+    --ambitious)    AMBITIOUS=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
     --no-graph)     USE_GRAPH=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
@@ -635,6 +640,29 @@ features in this session.
 
 This is the one session where you are allowed to restructure PLAN.md freely.
 EOF
+if (( AMBITIOUS )); then
+cat <<'EOF'
+
+ADDITIONALLY — vision pass (you are explicitly NOT conservative here):
+Study this project as a PRODUCT, not a codebase. Think about who uses it and
+what they would miss most: compare against the obvious alternatives in its
+domain, read the README promises, look for capabilities that stop halfway.
+Then add a new milestone at the end of PLAN.md:
+
+    ## Milestone N: Proposed Features (vision)
+
+with 5-10 genuinely NEW feature items — not cleanups, not test coverage, not
+refactors. Rules for these items:
+- each must be a capability a real user would notice and value
+- each must be implementable in this codebase and sized for 1-3 pull requests
+- each must state a verifiable outcome (a test, a demo command, a doc)
+- do NOT implement any of them in this session
+
+The human reviews this PR and deletes what they don't want — propose boldly,
+they can prune. An empty vision section is a failure of imagination, not
+caution.
+EOF
+fi
 }
 
 prompt_item() {

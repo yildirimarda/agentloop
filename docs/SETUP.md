@@ -1111,6 +1111,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `--max-growth N` | 10 | Young project: raise it. Tight scope: lower it |
 | `--ci-retries N` | 1 | On a red PR, feed the failing CI log back to the agent on the same branch, up to N times (0 = off) |
 | `--auto-replan` | off | When the plan runs out mid-loop, run one replan session (plan PR for your review) instead of just stopping |
+| `--ambitious` | off | With `--replan`: adds a vision pass — the agent proposes 5-10 genuinely new product features under a "Proposed Features (vision)" milestone, for you to prune in the plan PR |
 | `--no-wait` | off | Rarely — `main` goes stale and items can repeat |
 | `--timeout N` | 20 | CI takes longer than 20 minutes |
 | `-m ID` | from config | Trying a different model for one run |
