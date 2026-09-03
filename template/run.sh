@@ -262,6 +262,17 @@ in_container() {
 gh_c()       { in_container gh "$@"; }
 git_pull_c() { in_container git pull --ff-only --quiet >/dev/null 2>&1 || true; }
 
+# Verified pull with retries — the post-merge accounting reads PLAN.md, and a
+# silently failed pull makes it compare a STALE plan, mis-reporting ticks.
+git_pull_verified() {
+  local i
+  for i in 1 2 3; do
+    in_container git pull --ff-only --quiet >/dev/null 2>&1 && return 0
+    sleep 5
+  done
+  return 1
+}
+
 # Keep the knowledge graph current so the agent can query it instead of reading
 # whole files. Never fatal — Graphify is an optimisation, not a dependency.
 # --code-only means pure tree-sitter: no LLM calls, no API key, no network.
@@ -944,7 +955,13 @@ for (( i = 1; i <= COUNT; i++ )); do
   # ── Accounting: did it tick its box, and did the plan grow? ───────────────
   head_branch="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
   git switch main --quiet 2>/dev/null || true
-  git_pull_c
+  if ! git_pull_verified; then
+    echo
+    echo "WARNING: could not pull main after the merge (network?). Skipping the"
+    echo "plan accounting rather than reading a stale PLAN.md — the merge itself"
+    echo "succeeded. Run 'git pull' and start the loop again."
+    exit 1
+  fi
   # Remote branch is deleted by delete-branch-on-merge; tidy the local copy too.
   [[ -n "$head_branch" ]] && git branch -D "$head_branch" >/dev/null 2>&1 || true
 
