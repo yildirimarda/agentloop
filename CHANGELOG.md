@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/yildirimarda/agentloop/compare/v0.15.0...v0.15.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* verify the post-merge pull before plan accounting — a swallowed pull failure produced false not-ticked warnings ([94cd9f9](https://github.com/yildirimarda/agentloop/commit/94cd9f96b00857e76d711242bc5ed43570984b0a))
+
 ## [0.15.0](https://github.com/yildirimarda/agentloop/compare/v0.14.0...v0.15.0) (2026-09-02)
 
 
