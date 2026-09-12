@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.4](https://github.com/yildirimarda/agentloop/compare/v0.15.3...v0.15.4) (2026-09-12)
+
+
+### Bug Fixes
+
+* forbid committing generated artifacts in the agent workflow rules ([e58d3f2](https://github.com/yildirimarda/agentloop/commit/e58d3f28049061eaabde4f22a00974dd5a704b11))
+
 ## [0.15.3](https://github.com/yildirimarda/agentloop/compare/v0.15.2...v0.15.3) (2026-09-12)
 
 
