@@ -187,9 +187,19 @@ fi
 
 # ── Cheap guards before any heavy checks ─────────────────────────────────────
 if [[ "$MODE" == "init" && -f "$PLAN" ]]; then
-  die "$PLAN already exists — refusing to overwrite it.
+  # The installer ships a skeleton PLAN.md. If it is still byte-identical to
+  # the one recorded in the .agentloop stamp, nobody has written a real plan
+  # yet — let --init replace it. A modified plan stays protected.
+  _stamp_hash="$({ grep '^hash:PLAN.md=' .agentloop 2>/dev/null || true; } | cut -d= -f2)"
+  if command -v md5sum >/dev/null 2>&1; then _cur_hash="$(md5sum < "$PLAN" | cut -d' ' -f1)"
+  else _cur_hash="$(md5 -q "$PLAN")"; fi
+  if [[ -n "$_stamp_hash" && "$_cur_hash" == "$_stamp_hash" ]]; then
+    info "PLAN.md is the untouched installer skeleton — --init will replace it"
+  else
+    die "$PLAN already exists — refusing to overwrite it.
 Use ./run.sh --replan to restructure it, or delete the file first if you
 really want a fresh start."
+  fi
 fi
 
 # ── Preflight ────────────────────────────────────────────────────────────────
