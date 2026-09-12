@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.3](https://github.com/yildirimarda/agentloop/compare/v0.15.2...v0.15.3) (2026-09-12)
+
+
+### Bug Fixes
+
+* survive branch-protection 403 in github-setup; automerge falls back to watch-and-merge where native auto-merge is unavailable ([9642ec1](https://github.com/yildirimarda/agentloop/commit/9642ec1abe8ab007ae2769adc0792ac9a741be37))
+
 ## [0.15.2](https://github.com/yildirimarda/agentloop/compare/v0.15.1...v0.15.2) (2026-09-12)
 
 
