@@ -21,7 +21,11 @@ work you discovered along the way, open a pull request, and stop.
    session without completing the item, revert it to `- [ ]` before pushing.
 6. Record any new work you discovered — see "Growing the plan" below.
 7. Commit using Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`,
-   `refactor:`, `test:`. Small, single-purpose commits.
+   `refactor:`, `test:`. Small, single-purpose commits. Before committing,
+   look at `git status`: NEVER commit generated artifacts — bytecode
+   (`__pycache__`, `*.pyc`), tool caches (`.pytest_cache`, `.ruff_cache`,
+   `.mypy_cache`), reports, coverage files, build output. If one shows up,
+   add it to `.gitignore` in the same commit instead.
 8. `git push -u origin HEAD`. If the push is rejected because `main` moved,
    merge `origin/main` into your branch. If `PLAN.md` conflicts, take main's
    version of every line except your own item's tick — never let a conflict
