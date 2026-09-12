@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/yildirimarda/agentloop/compare/v0.15.1...v0.15.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* let --init replace an untouched installer plan skeleton; real plans stay protected ([7bfcf4c](https://github.com/yildirimarda/agentloop/commit/7bfcf4ccd983dde4df7badad68f5cb57234447cd))
+
 ## [0.15.1](https://github.com/yildirimarda/agentloop/compare/v0.15.0...v0.15.1) (2026-09-03)
 
 
