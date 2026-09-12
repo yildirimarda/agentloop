@@ -89,6 +89,9 @@ fi
 
 echo
 echo "> branch protection (main)"
+# Tolerant: on private repos under the Free plan GitHub rejects branch
+# protection (403). Warn and continue — labels and the rest still matter.
+set +e
 gh api -X PUT "repos/$REPO/branches/main/protection" \
   --input - <<EOF
 {
@@ -110,8 +113,16 @@ echo "  OK  main protected: force push off, CI required"
 
 echo
 echo "> repository settings"
-gh repo edit --enable-auto-merge --enable-squash-merge --delete-branch-on-merge
-echo "  OK  auto-merge + squash + delete branch on merge"
+PROT_RC=$?
+if [[ $PROT_RC -ne 0 ]]; then
+  echo "  WARN branch protection failed (private repo on the Free plan?)."
+  echo "       Merges will not be gated by required checks; the automerge"
+  echo "       workflow falls back to watching CI itself. Continuing."
+fi
+gh repo edit --enable-auto-merge --enable-squash-merge --delete-branch-on-merge \
+  || echo "  WARN could not enable repo auto-merge (plan limitation) — the automerge workflow's fallback covers this"
+set -e
+echo "  OK  squash + delete branch on merge (auto-merge: see above)"
 
 echo
 echo "> labels"

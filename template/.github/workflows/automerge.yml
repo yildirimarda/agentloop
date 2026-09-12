@@ -33,7 +33,15 @@ jobs:
         # release-please immediately. Without it, everything still works;
         # release-please just waits for the next human push (or a manual
         # Actions -> release -> Run workflow).
-        run: gh pr merge --auto --squash "$PR" --repo "$REPO"
+        # Native auto-merge needs branch protection + the repo setting, which
+        # private repos on the Free plan don't get. Fallback: watch the PR's
+        # checks ourselves and squash-merge when they all pass.
+        run: |
+          if ! gh pr merge --auto --squash "$PR" --repo "$REPO"; then
+            echo "auto-merge unavailable — watching checks, then merging directly"
+            gh pr checks "$PR" --repo "$REPO" --watch --fail-fast
+            gh pr merge --squash "$PR" --repo "$REPO"
+          fi
         env:
           GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
