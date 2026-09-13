@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.9](https://github.com/yildirimarda/agentloop/compare/v0.15.8...v0.15.9) (2026-09-13)
+
+
+### Bug Fixes
+
+* **automerge:** poll the check-runs REST API with visible errors — gh pr checks --json failed silently every iteration ([44bcfe9](https://github.com/yildirimarda/agentloop/commit/44bcfe9dc96114be9ebb169e423319a7dd1ae6f3))
+
 ## [0.15.8](https://github.com/yildirimarda/agentloop/compare/v0.15.7...v0.15.8) (2026-09-13)
 
 
