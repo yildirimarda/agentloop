@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.5](https://github.com/yildirimarda/agentloop/compare/v0.15.4...v0.15.5) (2026-09-13)
+
+
+### Bug Fixes
+
+* automerge watches PR checks where the auto-merge feature is unavailable ([2db05a0](https://github.com/yildirimarda/agentloop/commit/2db05a038fb8e43e18249296071e48c0f11b5df6))
+
 ## [0.15.4](https://github.com/yildirimarda/agentloop/compare/v0.15.3...v0.15.4) (2026-09-12)
 
 
