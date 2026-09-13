@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.8](https://github.com/yildirimarda/agentloop/compare/v0.15.7...v0.15.8) (2026-09-13)
+
+
+### Bug Fixes
+
+* **automerge:** re-trigger on synchronize, one watcher per PR, self-excluding checks poll; loop labels PRs deterministically ([c9e9ec6](https://github.com/yildirimarda/agentloop/commit/c9e9ec64dce6eba15c47c3c6fddf1b7d90f5570a))
+
 ## [0.15.7](https://github.com/yildirimarda/agentloop/compare/v0.15.6...v0.15.7) (2026-09-13)
 
 
