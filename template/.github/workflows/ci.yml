@@ -43,19 +43,24 @@ jobs:
 
       - name: Install dependencies
         if: steps.py.outputs.found == 'true'
-        run: uv sync --all-extras --dev
+        # --frozen: use exactly the locked versions. Without it CI may
+        # resolve a different ruff than local runs, and format rules change
+        # between ruff versions — "clean locally, red in CI".
+        run: uv sync --frozen --all-extras --dev
 
       - name: Lint
         if: steps.py.outputs.found == 'true'
-        run: uv run ruff check .
+        run: |
+          uv run --no-sync ruff --version
+          uv run --no-sync ruff check .
 
       - name: Format check
         if: steps.py.outputs.found == 'true'
-        run: uv run ruff format --check .
+        run: uv run --no-sync ruff format --check .
 
       - name: Tests
         if: steps.py.outputs.found == 'true'
-        run: uv run pytest -q
+        run: uv run --no-sync pytest -q
 
       # ── Terraform: only runs if the repo actually contains .tf files ──────
       - name: Detect terraform
