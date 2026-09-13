@@ -11,7 +11,16 @@ name: automerge
 
 on:
   pull_request:
-    types: [opened, labeled, reopened]
+    # synchronize matters: on repos using the watch-fallback (no native
+    # auto-merge), a push after open/label would otherwise leave the PR
+    # unwatched forever. Native --auto repos are unaffected (it is sticky).
+    types: [opened, labeled, reopened, synchronize]
+
+# One watcher per PR — a new push cancels the stale watcher and starts a
+# fresh one against the new head.
+concurrency:
+  group: automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -45,15 +54,32 @@ jobs:
             GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$PR" --repo "$REPO"
           else
             echo "no auto-merge on this repo — watching this PR's checks instead"
+            # NOT gh pr checks --watch: that waits for ALL checks including
+            # THIS job, i.e. it deadlocks on itself. Poll instead, excluding
+            # our own workflow from the tally.
             sleep 30   # let CI register its check runs first
-            for i in 1 2 3; do
-              if gh pr checks "$PR" --repo "$REPO" --watch --fail-fast; then
-                GH_TOKEN="$MERGE_TOKEN" gh pr merge --squash "$PR" --repo "$REPO"
-                exit 0
+            for i in $(seq 1 55); do
+              counts="$(gh pr checks "$PR" --repo "$REPO" --json name,bucket \
+                --jq '[.[] | select((.name // "") | test("automerge|^enable$") | not)]
+                      | {fail: ([.[] | select(.bucket=="fail" or .bucket=="cancel")] | length),
+                         pending: ([.[] | select(.bucket=="pending")] | length),
+                         total: length}' 2>/dev/null || echo "")"
+              if [ -n "$counts" ]; then
+                fail=$(echo "$counts" | jq .fail)
+                pending=$(echo "$counts" | jq .pending)
+                total=$(echo "$counts" | jq .total)
+                if [ "$fail" -gt 0 ]; then
+                  echo "checks failed — leaving the PR open for the loop's CI-fix cycle"
+                  exit 1
+                fi
+                if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+                  GH_TOKEN="$MERGE_TOKEN" gh pr merge --squash "$PR" --repo "$REPO"
+                  exit 0
+                fi
               fi
-              sleep 20   # checks may not have been reported yet — retry
+              sleep 20
             done
-            echo "checks failed or never reported — leaving the PR open for the loop's CI-fix cycle"
+            echo "timed out waiting for checks — leaving the PR open"
             exit 1
           fi
         env:

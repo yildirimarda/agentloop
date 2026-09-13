@@ -487,6 +487,11 @@ abandon_work_branch() {
 # Workflow runs are readable with "Actions: Read-only".
 wait_for_merge() {
   local pr="$1" deadline=$(( $(date +%s) + TIMEOUT_MIN * 60 ))
+  # The automerge workflow only acts on PRs labelled "automated". Models
+  # sometimes forget the label when opening the PR — labelling is
+  # deterministic, so do it here. No-op if already labelled; if it was
+  # missing, the "labeled" event triggers the automerge workflow now.
+  gh_c pr edit "$pr" --add-label automated >/dev/null 2>&1 || true
   echo "> waiting for PR #$pr to merge (timeout ${TIMEOUT_MIN}m)"
   while (( $(date +%s) < deadline )); do
     local out state head fails
