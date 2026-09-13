@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.7](https://github.com/yildirimarda/agentloop/compare/v0.15.6...v0.15.7) (2026-09-13)
+
+
+### Bug Fixes
+
+* exclude the automerge orchestration workflow from the CI verdict and failure-log fetch ([55fa08b](https://github.com/yildirimarda/agentloop/commit/55fa08b61c2e9e554cfd4aa4782a6143f23e14ef))
+
 ## [0.15.6](https://github.com/yildirimarda/agentloop/compare/v0.15.5...v0.15.6) (2026-09-13)
 
 
