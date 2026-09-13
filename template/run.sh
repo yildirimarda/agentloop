@@ -501,7 +501,7 @@ wait_for_merge() {
     esac
     if [[ -n "$head" && "$head" != "$state" ]]; then
       fails="$(gh_c api "repos/{owner}/{repo}/actions/runs?head_sha=$head&per_page=30" \
-        --jq '[.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")] | length' \
+        --jq '[.workflow_runs[] | select(.name != "automerge") | select(.conclusion=="failure" or .conclusion=="timed_out" or .conclusion=="cancelled")] | length' \
         2>/dev/null || echo 0)"
       if [[ "${fails:-0}" -gt 0 ]] 2>/dev/null; then
         info "CI failed on PR #$pr"
@@ -521,7 +521,7 @@ ci_fail_log() {
   head="$(gh_c pr view "$pr" --json headRefOid -q .headRefOid 2>/dev/null || true)"
   [[ -n "$head" ]] || return 0
   rid="$(gh_c api "repos/{owner}/{repo}/actions/runs?head_sha=$head&per_page=30" \
-        --jq '[.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="timed_out")][0].id' \
+        --jq '[.workflow_runs[] | select(.name != "automerge") | select(.conclusion=="failure" or .conclusion=="timed_out")][0].id' \
         2>/dev/null || true)"
   [[ -n "$rid" && "$rid" != "null" ]] || return 0
   # Failed job names first — a bare log tail doesn't say WHICH check died.
