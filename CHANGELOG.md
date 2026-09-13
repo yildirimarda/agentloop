@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.10](https://github.com/yildirimarda/agentloop/compare/v0.15.9...v0.15.10) (2026-09-13)
+
+
+### Bug Fixes
+
+* **automerge:** grant checks:read — an explicit permissions block zeroes unlisted permissions, 403ing every poll ([24c8636](https://github.com/yildirimarda/agentloop/commit/24c86362182d02c2e304a83352b3b21e19063f98))
+
 ## [0.15.9](https://github.com/yildirimarda/agentloop/compare/v0.15.8...v0.15.9) (2026-09-13)
 
 
