@@ -55,15 +55,20 @@ jobs:
           else
             echo "no auto-merge on this repo — watching this PR's checks instead"
             # NOT gh pr checks --watch: that waits for ALL checks including
-            # THIS job, i.e. it deadlocks on itself. Poll instead, excluding
-            # our own workflow from the tally.
+            # THIS job, i.e. it deadlocks on itself. Poll the check-runs REST
+            # API instead (stable shape), excluding our own job ("enable").
             sleep 30   # let CI register its check runs first
             for i in $(seq 1 55); do
-              counts="$(gh pr checks "$PR" --repo "$REPO" --json name,bucket \
-                --jq '[.[] | select((.name // "") | test("automerge|^enable$") | not)]
-                      | {fail: ([.[] | select(.bucket=="fail" or .bucket=="cancel")] | length),
-                         pending: ([.[] | select(.bucket=="pending")] | length),
-                         total: length}' 2>/dev/null || echo "")"
+              head_sha="$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)" || true
+              counts="$(gh api "repos/$REPO/commits/$head_sha/check-runs" \
+                --jq '[.check_runs[] | select(.name != "enable")]
+                      | {fail: ([.[] | select(.conclusion != null
+                                 and .conclusion != "success"
+                                 and .conclusion != "skipped"
+                                 and .conclusion != "neutral")] | length),
+                         pending: ([.[] | select(.status != "completed")] | length),
+                         total: length}')" || counts=""
+              echo "poll $i: sha=${head_sha:0:9} counts=${counts:-<api error, see above>}"
               if [ -n "$counts" ]; then
                 fail=$(echo "$counts" | jq .fail)
                 pending=$(echo "$counts" | jq .pending)
