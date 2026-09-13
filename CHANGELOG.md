@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.6](https://github.com/yildirimarda/agentloop/compare/v0.15.5...v0.15.6) (2026-09-13)
+
+
+### Bug Fixes
+
+* **automerge:** read repo settings and PR checks with GITHUB_TOKEN — fine-grained PATs cannot read check results; merge still uses the PAT ([b224304](https://github.com/yildirimarda/agentloop/commit/b224304f11d6bef68cee91bc82f9ddd92db0334c))
+
 ## [0.15.5](https://github.com/yildirimarda/agentloop/compare/v0.15.4...v0.15.5) (2026-09-13)
 
 
