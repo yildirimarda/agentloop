@@ -22,9 +22,14 @@ concurrency:
   group: automerge-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Declaring a permissions block zeroes every permission not listed —
+# checks:read is what lets the watcher poll check results (its absence was
+# a hard-won lesson: silent 403s on every poll).
 permissions:
   contents: write
   pull-requests: write
+  checks: read
+  actions: read
 
 jobs:
   enable:
@@ -49,7 +54,9 @@ jobs:
         # CI entirely. There we watch this PR's own checks and only merge
         # after they all pass.
         run: |
-          allow="$(gh api "repos/$REPO" --jq '.allow_auto_merge // false' 2>/dev/null || echo false)"
+          # read repo settings with the PAT — allow_auto_merge is only visible
+          # with push access, which the workflow token may lack
+          allow="$(GH_TOKEN="$MERGE_TOKEN" gh api "repos/$REPO" --jq '.allow_auto_merge // false' 2>/dev/null || echo false)"
           if [ "$allow" = "true" ]; then
             GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$PR" --repo "$REPO"
           else
