@@ -40,14 +40,15 @@ jobs:
         # CI entirely. There we watch this PR's own checks and only merge
         # after they all pass.
         run: |
-          if [ "$(gh repo view "$REPO" --json autoMergeAllowed -q .autoMergeAllowed)" = "true" ]; then
-            gh pr merge --auto --squash "$PR" --repo "$REPO"
+          allow="$(gh api "repos/$REPO" --jq '.allow_auto_merge // false' 2>/dev/null || echo false)"
+          if [ "$allow" = "true" ]; then
+            GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash "$PR" --repo "$REPO"
           else
             echo "no auto-merge on this repo — watching this PR's checks instead"
             sleep 30   # let CI register its check runs first
             for i in 1 2 3; do
               if gh pr checks "$PR" --repo "$REPO" --watch --fail-fast; then
-                gh pr merge --squash "$PR" --repo "$REPO"
+                GH_TOKEN="$MERGE_TOKEN" gh pr merge --squash "$PR" --repo "$REPO"
                 exit 0
               fi
               sleep 20   # checks may not have been reported yet — retry
@@ -56,6 +57,11 @@ jobs:
             exit 1
           fi
         env:
-          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
+          # Reads (repo settings, PR checks) use the workflow's own token —
+          # fine-grained PATs cannot read check results (no "Checks"
+          # permission exists for them). Only the MERGE uses the PAT, so the
+          # resulting push still triggers release-please.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_TOKEN: ${{ secrets.AUTOMERGE_TOKEN || secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
