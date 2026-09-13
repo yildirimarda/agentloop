@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.11](https://github.com/yildirimarda/agentloop/compare/v0.15.10...v0.15.11) (2026-09-13)
+
+
+### Bug Fixes
+
+* **ci-template:** frozen sync + no-sync runs + ruff version logging ([b2c30e4](https://github.com/yildirimarda/agentloop/commit/b2c30e4bd84a7e5288532108c860a70cbf9522f8))
+
 ## [0.15.10](https://github.com/yildirimarda/agentloop/compare/v0.15.9...v0.15.10) (2026-09-13)
 
 
