@@ -83,8 +83,11 @@ WORKDIR /work
 # Pre-create the volume mount points. A fresh named volume copies ownership
 # from the image path at first mount; if the path does not exist in the
 # image, Docker creates it root-owned and opencode/claude cannot write
-# their caches (EACCES on /home/agent/.cache).
-RUN mkdir -p /home/agent/.cache /home/agent/.claude
+# their caches (EACCES on /home/agent/.cache). Same reason /work/.venv is
+# pre-created here: the agent-venv volume that shadows it (see run.sh)
+# would otherwise land root-owned, and `uv sync` as the agent user fails
+# with "Permission denied" the moment it tries to create the venv there.
+RUN mkdir -p /home/agent/.cache /home/agent/.claude /work/.venv
 
 # A git identity is REQUIRED — without it the agent cannot create commits.
 # The credential helper line makes `git push`/`git pull` over HTTPS work with
