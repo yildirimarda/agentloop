@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.13](https://github.com/yildirimarda/agentloop/compare/v0.15.12...v0.15.13) (2026-10-11)
+
+
+### Bug Fixes
+
+* port agent-venv isolation to template; add host.docker.internal reachability ([f96148d](https://github.com/yildirimarda/agentloop/commit/f96148d5c4fa0729299aa52a1a484a1cac732490))
+
 ## [0.15.12](https://github.com/yildirimarda/agentloop/compare/v0.15.11...v0.15.12) (2026-10-11)
 
 
