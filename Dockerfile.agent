@@ -9,9 +9,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG TF_VERSION=1.9.8
 
 # ── Base tools + Java (required by Spark) ────────────────────────────────────
+# python3-venv is required for `python3 -m venv` below (Headroom) — Ubuntu's
+# python3 package does not bundle ensurepip/venv on its own, so without this
+# the Headroom install step fails with "ensurepip is not available".
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates jq unzip gnupg lsb-release shellcheck \
-      python3 openjdk-17-jre-headless \
+      python3 python3-venv openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Node 22 (required by OpenCode) ───────────────────────────────────────────
