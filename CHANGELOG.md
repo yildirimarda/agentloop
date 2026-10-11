@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.14](https://github.com/yildirimarda/agentloop/compare/v0.15.13...v0.15.14) (2026-10-11)
+
+
+### Bug Fixes
+
+* pre-create /work/.venv in the image so the agent-venv volume isn't root-owned ([9e8fb27](https://github.com/yildirimarda/agentloop/commit/9e8fb2737b6111b6ff9785eeedc8aef2ebc09ee6))
+
 ## [0.15.13](https://github.com/yildirimarda/agentloop/compare/v0.15.12...v0.15.13) (2026-10-11)
 
 
