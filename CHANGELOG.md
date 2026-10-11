@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.12](https://github.com/yildirimarda/agentloop/compare/v0.15.11...v0.15.12) (2026-10-11)
+
+
+### Bug Fixes
+
+* isolate container venv from bind-mounted repo (host CLT-prompt loop) ([da0de5a](https://github.com/yildirimarda/agentloop/commit/da0de5a25e8711458ec3c7f8eba1e7c80d7208c3))
+
 ## [0.15.11](https://github.com/yildirimarda/agentloop/compare/v0.15.10...v0.15.11) (2026-09-13)
 
 
