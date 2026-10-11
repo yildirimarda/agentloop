@@ -239,6 +239,7 @@ in_container() {
   # repeated CLT install prompts and a broken (ancient system) interpreter
   # the moment the host runs ruff/pytest/uv in a project managed by agentloop.
   docker run --rm \
+    --add-host=host.docker.internal:host-gateway \
     -v "$REPO_DIR:/work" \
     -v agent-venv:/work/.venv \
     -v agent-cache:/home/agent/.cache \

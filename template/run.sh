@@ -252,8 +252,18 @@ mkdir -p logs
 
 # ── Docker wrappers ──────────────────────────────────────────────────────────
 in_container() {
+  # agent-venv shadows /work/.venv with its own named volume so the
+  # container's uv-managed venv never lands in the bind-mounted repo on the
+  # host. Without this, a venv recreated inside the (Linux) container writes
+  # symlinks like .venv/bin/python -> /usr/bin/python3; that exact path
+  # differs across host/container, so reading the same absolute symlink from
+  # macOS resolves to the Xcode Command Line Tools stub instead -- triggering
+  # repeated CLT install prompts and a broken (ancient system) interpreter
+  # the moment the host runs ruff/pytest/uv in a project managed by agentloop.
   docker run --rm \
+    --add-host=host.docker.internal:host-gateway \
     -v "$REPO_DIR:/work" \
+    -v agent-venv:/work/.venv \
     -v agent-cache:/home/agent/.cache \
     -v agent-claude-home:/home/agent/.claude \
     -e OPENROUTER_API_KEY="$OPENROUTER_KEY" \
