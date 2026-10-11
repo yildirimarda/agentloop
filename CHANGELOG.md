@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.15](https://github.com/yildirimarda/agentloop/compare/v0.15.14...v0.15.15) (2026-10-11)
+
+
+### Bug Fixes
+
+* install python3-venv so the Headroom build step doesn't fail ([f9947a4](https://github.com/yildirimarda/agentloop/commit/f9947a44e68850668701d5704d536081eae80f92))
+
 ## [0.15.14](https://github.com/yildirimarda/agentloop/compare/v0.15.13...v0.15.14) (2026-10-11)
 
 
