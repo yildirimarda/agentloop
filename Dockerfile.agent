@@ -80,6 +80,12 @@ RUN uv venv /opt/graphify --python 3.12 \
 
 # ── Non-root user ────────────────────────────────────────────────────────────
 RUN useradd -m -s /bin/bash agent
+# Create /work and hand it to agent BEFORE the WORKDIR line below. WORKDIR
+# creates its target directory root-owned regardless of the active USER (at
+# least on this Docker/colima build), so without this, the agent user can't
+# write into /work at all — including the mkdir -p .../work/.venv a few
+# lines down, which failed with "Permission denied" until this was added.
+RUN mkdir -p /work && chown agent:agent /work
 USER agent
 WORKDIR /work
 
