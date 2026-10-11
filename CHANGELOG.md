@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.16](https://github.com/yildirimarda/agentloop/compare/v0.15.15...v0.15.16) (2026-10-11)
+
+
+### Bug Fixes
+
+* chown /work to agent before WORKDIR, not just the venv mount point ([ce502c3](https://github.com/yildirimarda/agentloop/commit/ce502c3a04b77d932af0b6107ac4161560750043))
+
 ## [0.15.15](https://github.com/yildirimarda/agentloop/compare/v0.15.14...v0.15.15) (2026-10-11)
 
 
