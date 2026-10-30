@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/yildirimarda/agentloop/compare/v0.15.16...v0.16.0) (2026-10-30)
+
+
+### Features
+
+* per-job CI failure logs, keep branch and return to main on failure, container cleanup on Ctrl+C, stall timeout, NVIDIA NIM ([#43](https://github.com/yildirimarda/agentloop/issues/43)) ([66a4ddb](https://github.com/yildirimarda/agentloop/commit/66a4ddbf61d272233d2152951f07a40d12ea880e))
+
 ## [0.15.16](https://github.com/yildirimarda/agentloop/compare/v0.15.15...v0.15.16) (2026-10-11)
 
 
