@@ -246,6 +246,30 @@ git rev-parse --verify -q agent/demo >/dev/null     || fail "keep_branch_and_ret
 echo "$kb_out" | grep -q "git switch agent/demo"    || fail "keep_branch_and_return: missing inspect hint"
 echo "$kb_out" | grep -q "start again from main" || fail "keep_branch_and_return: missing restart hint"
 echo "$kb_out" | grep -q "gh pr close 7"            || fail "keep_branch_and_return: missing PR close hint"
+# ci_fail_log: per-job log, noise stripped, retried when the first pass is empty
+mkdir -p "$TMP/cf" && cd "$TMP/cf"
+info() { echo "  $*"; }
+sleep() { :; }
+CF_CALLS="$TMP/cf/calls"; : > "$CF_CALLS"
+gh_c() {
+  case "$*" in
+    "pr view 9 --json headRefOid -q .headRefOid") echo abc123 ;;
+    api*) echo x >> "$CF_CALLS"; [[ "$(wc -l < "$CF_CALLS")" -ge 2 ]] && printf '41\trust\n' ;;
+    "run view 41 --json jobs"*) printf '77\trust (windows-latest)\n' ;;
+    "run view --job 77 --log-failed")
+      printf 'rust (windows-latest)\tUNKNOWN STEP\t2026-10-30T11:30:30.8Z error: unused imports: `Arch`\n'
+      printf 'rust (windows-latest)\tUNKNOWN STEP\t2026-10-30T11:30:34.9Z Post job cleanup.\n'
+      printf 'rust (windows-latest)\tUNKNOWN STEP\t2026-10-30T11:30:35.2Z git version 2.56.0.windows.2\n' ;;
+  esac
+}
+eval "$(sed -n '/^_clean_job_log()/,/^}$/p;/^_ci_fail_log_once()/,/^}$/p;/^ci_fail_log()/,/^}$/p' "$TMP/proj/run.sh")"
+cf_out="$(ci_fail_log 9 2>/dev/null)"
+echo "$cf_out" | grep -q "FAILED JOB: rust / rust (windows-latest)" || fail "ci_fail_log: job header missing (empty first pass not retried?)"
+echo "$cf_out" | grep -q 'error: unused imports: `Arch`'          || fail "ci_fail_log: compiler error missing"
+echo "$cf_out" | grep -q "UNKNOWN STEP"                             && fail "ci_fail_log: column prefix not stripped"
+echo "$cf_out" | grep -q "git version"                              && fail "ci_fail_log: post-job cleanup noise not cut"
+ls "$TMP"/cf/logs/*-cifail.txt >/dev/null 2>&1                      || fail "ci_fail_log: no trace file written"
+unset -f gh_c sleep info
 cd "$TMP/proj"
 
 python3 -c "
