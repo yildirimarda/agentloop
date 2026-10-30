@@ -221,6 +221,15 @@ $ security find-generic-password -s openrouter -w | head -c 12
 sk-or-v1-abc
 ```
 
+**Optional — NVIDIA NIM** (instead of, or besides, OpenRouter)
+
+```
+$ security add-generic-password -s nvidia -a "$USER" -w 'nvapi-...'
+```
+
+Then declare the `nvidia-nim` provider in `opencode.json` and select a model
+with `-m nvidia-nim/<model>` — see `docs/ENGINES.md`.
+
 ### Phase 0 troubleshooting
 
 | Symptom | Cause and fix |
@@ -912,7 +921,7 @@ Set up the project layout, dependency manifest and a placeholder test so the tes
       1     graphify_god_nodes
 
   PR #2 opened
-> waiting for PR #2 to merge (timeout 20m)  ← bash polling, no tokens
+> waiting for PR #2 to merge (timeout 45m)  ← bash polling, no tokens
   merged
 
 ────────────────────────────────────────────────────────
@@ -1029,7 +1038,7 @@ merges bad code. The three common stops:
 | Symptom | Fix |
 |---|---|
 | Every item stops on CI failure | Your CI is stricter than the commands in `AGENTS.md`. Make them match exactly — if CI runs `ruff format --check`, `AGENTS.md` must tell the agent to run `ruff format`. |
-| Timeouts waiting for merge | CI slower than 20 min, or auto-merge isn't enabled. Check 4.3, then raise `--timeout`. |
+| Timeouts waiting for merge | CI slower than 45 min, or auto-merge isn't enabled. Check 4.3, then raise `--timeout`. |
 | Items done in the wrong order | The plan's order is wrong; `run.sh` follows the file literally. `--replan` or edit by hand. |
 | Same item attempted twice | The checkbox didn't merge to `main`. Are you running `--no-wait`? Don't, unless you understand this. |
 | Rate limit errors | Two copies of `run.sh` running at once. Don't — 20 req/min is shared. |
@@ -1115,7 +1124,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `--ambitious` | off | With `--replan`: adds a vision pass — the agent proposes 5-10 genuinely new product features under a "Proposed Features (vision)" milestone, for you to prune in the plan PR |
 | `--headroom` | off | (opencode engine) route the session through an in-container Headroom proxy that compresses old tool outputs before they reach the model. Persist with `HEADROOM=1` in `.agentloop.local` |
 | `--no-wait` | off | Rarely — `main` goes stale and items can repeat |
-| `--timeout N` | 20 | CI takes longer than 20 minutes |
+| `--timeout N` | 45 | CI takes longer than 45 minutes |
 | `-m ID` | from config | Trying a different model for one run |
 | `--no-graph` | off | Graphify is misbehaving |
 | `--image NAME` | `agent` | You keep multiple container variants |

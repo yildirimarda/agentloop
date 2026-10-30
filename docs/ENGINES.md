@@ -16,7 +16,7 @@ inside the container, and (c) stream parseable events.
 |---|---|
 | The prompt | Single argv string (item text wrapped by `prompt_item`, or raw `--task` text) |
 | Model override | `-m/--model` flag → forwarded to the engine's own model flag |
-| Credentials | Environment: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GH_TOKEN` |
+| Credentials | Environment: `OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GH_TOKEN` |
 | Full autonomy | Engine-specific flag/config — the container is the safety boundary, so "never ask" must be on |
 | Working dir | `/work` (the repo, bind-mounted; already on a fresh work branch) |
 
@@ -73,6 +73,66 @@ Adding an engine means extending two jq programs: `stream_view` (live view)
 and the tools-used summary in `run_agent`. `tests/install-test.sh` §11 pins
 these parsers against recorded fixture lines — add fixtures for the new engine
 there, from a real session log.
+
+## Providers inside the opencode engine
+
+OpenCode can talk to several model providers; the loop passes the keys for the
+ones it knows (keychain entry → env var in the container):
+
+| Provider | Keychain entry | Env var | Model id |
+|---|---|---|---|
+| OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `openrouter/vendor/model` |
+| NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` | `nvidia-nim/vendor/model` |
+
+NVIDIA NIM is OpenAI-compatible, so it is declared in `opencode.json` as a
+custom provider (the NIM free tier queues third-party models, so a paid or
+dedicated endpoint is the realistic use):
+
+```jsonc
+"provider": {
+  "nvidia-nim": {
+    "npm": "@ai-sdk/openai-compatible",
+    "name": "NVIDIA NIM",
+    "options": {
+      "baseURL": "https://integrate.api.nvidia.com/v1",
+      "apiKey": "{env:NVIDIA_API_KEY}",
+      "timeout": 600000
+    },
+    "models": {
+      "deepseek-ai/deepseek-v4.1-flash": {
+        "name": "DeepSeek V4.1 Flash", "tool_call": true, "reasoning": true,
+        "limit": { "context": 1000000, "output": 16384 }
+      }
+    }
+  }
+}
+```
+
+```
+security add-generic-password -s nvidia -a "$USER" -w 'nvapi-...'
+./run.sh -m nvidia-nim/deepseek-ai/deepseek-v4.1-flash      # or MODEL=... in .agentloop.local
+```
+
+When the model id starts with `nvidia`, the OpenRouter key becomes optional.
+
+## Session limits and failure handling
+
+- `--stall-timeout N` (default 45 min) kills a session that has produced no
+  output — a hung API call. The container dies and the loop continues with its
+  usual no-PR / no-commits handling. `0` disables it. Persist with
+  `STALL_MIN` in `.agentloop.local`. There is deliberately no cap on total
+  session length: a healthy session keeps emitting events.
+- Ctrl+C (or `kill`) stops every container of the run. Containers carry a
+  per-run label (and the repo path), so only this run's containers are stopped
+  and other projects are never touched. A container left by a run that died
+  uncleanly is cleaned up at the next start; if its run.sh is still alive, the
+  new run refuses to start instead.
+- On any failure the checkout returns to `main` and the work branch is KEPT;
+  the message prints the commands to inspect or delete it. Uncommitted
+  leftovers are stashed, never discarded.
+- A CI failure is reported only after all other checks finish, with the log of
+  every failed job (per platform). Runs GitHub cancels on its own are re-run
+  once automatically.
 
 ## Exit codes: explicitly NOT part of the contract
 

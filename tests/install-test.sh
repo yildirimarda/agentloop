@@ -228,6 +228,26 @@ grep -q '^only=workflows,claude' .agentloop || fail "--only: subset not recorded
 cd "$TMP/proj"
 grep -q -- "--headroom" run.sh || fail "run.sh lacks --headroom flag"
 grep -q "OPENCODE_CONFIG_CONTENT" run.sh || fail "run.sh lacks headroom config override"
+# ── 13b. Failure handling, watchdog, NVIDIA wiring ───────────────────────────
+grep -q "NVIDIA_API_KEY" run.sh      || fail "run.sh lacks NVIDIA_API_KEY passthrough"
+grep -q -- "--stall-timeout" run.sh  || fail "run.sh lacks --stall-timeout"
+grep -q "agentloop.run" run.sh       || fail "run.sh does not label its containers"
+./run.sh --help | grep -q -- "--stall-timeout" || fail "--help does not document --stall-timeout"
+# keep_branch_and_return: back on main, branch kept, dirty leftovers stashed
+mkdir -p "$TMP/kb" && cd "$TMP/kb"
+git init -q -b main . && git commit -q --allow-empty -m init
+git switch -q -c agent/demo && echo x > f.txt && git add f.txt && git commit -q -m work && echo y > dirty.txt
+eval "$(sed -n '/^keep_branch_and_return()/,/^}$/p' "$TMP/proj/run.sh")"
+kb_out="$(keep_branch_and_return "CI failing" 7)"
+[[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || fail "keep_branch_and_return: not back on main"
+git rev-parse --verify -q agent/demo >/dev/null     || fail "keep_branch_and_return: work branch was deleted"
+[[ -z "$(git status --porcelain)" ]]                || fail "keep_branch_and_return: tree not clean"
+[[ -n "$(git stash list)" ]]                        || fail "keep_branch_and_return: leftovers not stashed"
+echo "$kb_out" | grep -q "git switch agent/demo"    || fail "keep_branch_and_return: missing inspect hint"
+echo "$kb_out" | grep -q "start again from main" || fail "keep_branch_and_return: missing restart hint"
+echo "$kb_out" | grep -q "gh pr close 7"            || fail "keep_branch_and_return: missing PR close hint"
+cd "$TMP/proj"
+
 python3 -c "
 import json
 d = json.load(open('opencode.json'))
