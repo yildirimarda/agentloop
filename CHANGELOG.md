@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/yildirimarda/agentloop/compare/v0.16.0...v0.16.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* capture CI failure logs reliably — retry, trace to logs/*-cifail.txt, strip prefixes and post-job noise ([#45](https://github.com/yildirimarda/agentloop/issues/45)) ([1a071ae](https://github.com/yildirimarda/agentloop/commit/1a071aee708b8feaee44a01763a3c217551e2784))
+
 ## [0.16.0](https://github.com/yildirimarda/agentloop/compare/v0.15.16...v0.16.0) (2026-10-30)
 
 
