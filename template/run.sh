@@ -328,6 +328,7 @@ add_cost() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { printf "%.4f", a + b }';
 item_begin() {   # $1 = mode (item|task|init|replan|issue|review), $2 = text
   ITEM_OPEN=1; ITEM_MODE="$1"; ITEM_TEXT="$2"; ITEM_PR=""; ITEM_OUTCOME="interrupted"
   ITEM_SESSIONS=0; ITEM_TOKENS=0; ITEM_COST=0; ITEM_GRAPH=0; ITEM_START="$(date +%s)"
+  AWAIT_FIXES=0   # the "fixes" column must not inherit the previous item's count
 }
 
 item_end() {     # $1 = outcome: merged|opened|plan-pr|no-pr|no-pr-commits|blocked|ci-failed|not-merged|interrupted
@@ -2107,7 +2108,7 @@ EOF
 # branch it stays there so the existing PR updates. Ends the script.
 run_oneoff() {
   local kind="$1" short="$2" prompt="$3" cur_branch graphctx on_main=0 rc=0 pr="" flagged=0
-  local head_branch fb pu
+  local head_branch fb pu head_before="" head_after
   # Already on a feature branch: tell the agent to stay on it. Otherwise
   # AGENTS.md's workflow would make a weak model open a SECOND branch/PR
   # instead of updating the existing one — exactly wrong for "fix this PR".
@@ -2130,6 +2131,9 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
 $(graph_section "$graphctx")"
   fi
   item_begin "$kind" "$short"
+  # On an existing PR's branch the PR itself proves nothing about this
+  # session; its head commit on GitHub, before vs after, does.
+  (( on_main )) || head_before="$(gh_c pr view --json headRefOid -q .headRefOid 2>/dev/null || true)"
   while :; do
     (( on_main )) && new_work_branch "$kind" "$short"
     BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -2142,6 +2146,20 @@ $(graph_section "$graphctx")"
     use_fallback_model || break
     abandon_work_branch
   done
+  if [[ -n "$head_before" && -n "$pr" ]]; then
+    head_after="$(gh_c pr view "$pr" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+    if [[ "$head_after" == "$head_before" ]]; then
+      if made_commits; then
+        echo "  the agent committed but pushed nothing to PR #$pr"
+        ITEM_OUTCOME="no-pr-commits"; STOP_REASON="the $kind session did not push to PR #$pr"
+      else
+        echo "  no new commits on PR #$pr — the agent changed nothing"
+        ITEM_OUTCOME="no-pr"; STOP_REASON="the $kind session changed nothing on PR #$pr"
+      fi
+      keep_branch_and_return "nothing new on the PR" "$pr"
+      exit 1
+    fi
+  fi
   if [[ -z "$pr" ]] && ! made_commits; then
     echo "  no PR opened, no commits visible — the agent wrote nothing"
     abandon_work_branch
@@ -2166,6 +2184,7 @@ $(graph_section "$graphctx")"
       echo
       echo "Feedback addressed on PR #$pr — it is labelled '$PR_FLAG', so it waits for your review."
       [[ "$PR_FLAG" == blocked ]] && echo "Remove the 'blocked' label to let it auto-merge once CI is green."
+      keep_branch_and_return "PR waits for your review" "$pr"
       item_end opened
       DONE_NOTE="review feedback addressed on PR #$pr (labelled $PR_FLAG)"
       exit 0
