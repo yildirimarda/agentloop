@@ -519,4 +519,33 @@ grep -q "/.agents/skills:/home/agent/.claude/skills:ro" "$FAKE_STATE/docker_moun
   || fail "claude engine: .agents/skills not mounted as Claude's skills directory"
 expect_out 'session cost: $0.25'
 
+# ── 15. Model fallback: an empty session switches models and redoes the item ─
+new_project fallback
+export FAKE_BAD_MODELS="default,vendor/also-bad"
+run_sh -n 2 --fallback-models "vendor/also-bad, vendor/good"
+[[ "$RC" == 0 ]] || fail "fallback: loop exited $RC"
+expect_out "the default model produced nothing (no commits, no PR) — switching to vendor/also-bad"
+expect_out "vendor/also-bad produced nothing (no commits, no PR) — switching to vendor/good"
+expect_out "completed:     2 item(s)"
+[[ "$(cat "$FAKE_STATE/engine_calls")" == "$(printf '%s\n' 'opencode default' 'opencode vendor/also-bad' 'opencode vendor/good' 'opencode vendor/good')" ]] \
+  || fail "fallback: unexpected model sequence: $(tr '\n' ' ' < "$FAKE_STATE/engine_calls")"
+[[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "fallback: abandoned attempt branches left behind"
+
+new_project fallback-exhausted
+export FAKE_BAD_MODELS="default,vendor/bad"
+run_sh --fallback-models vendor/bad
+[[ "$RC" == 1 ]] || fail "fallback exhausted: expected exit 1, got $RC"
+expect_out "STOPPING: no PR was opened and no commits are visible"
+
+new_project task-fallback
+export FAKE_BAD_MODELS="default"
+run_sh --task "tidy the README" --fallback-models vendor/good
+[[ "$RC" == 0 ]] || fail "task fallback: exited $RC"
+expect_out "switching to vendor/good"
+
+new_project task-nothing
+export FAKE_BAD_MODELS="default"
+run_sh --task "tidy the README"
+[[ "$RC" == 1 ]] || fail "a task that wrote nothing must exit non-zero (got $RC)"
+
 echo "loop-test OK"

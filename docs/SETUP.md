@@ -1131,6 +1131,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `--no-wait` | off | Rarely — `main` goes stale and items can repeat |
 | `--timeout N` | 45 | CI takes longer than 45 minutes |
 | `-m ID` | from config | Trying a different model for one run |
+| `--fallback-models A,B` | none | Free endpoints churn and rate-limit. When a session yields nothing (no commits, no PR), the item is redone with the next model, which then stays for the rest of the run (`FALLBACK_MODELS=` in `.agentloop.local`) |
 | `--no-graph` | off | Graphify is misbehaving |
 | `--no-graph-context` | off | Don't put the graph's answer for the item into the prompt (`GRAPH_CONTEXT=0`) |
 | `--image NAME` | `agent` | You keep multiple container variants |
@@ -1138,7 +1139,8 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 **Per-machine defaults without touching git:** put `KEY=VALUE` lines in
 `.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
 `ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`,
-`HEADROOM`, `STALL_MIN`, `LEARN`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`.
+`HEADROOM`, `STALL_MIN`, `LEARN`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
+`GIT_GUARD`, `FALLBACK_MODELS`.
 Precedence: CLI flags > `.agentloop.local` > committed defaults
 (`opencode.json`). This is the intended way to switch models freely — the
 committed config stays the team/repo default; your experiments never require
@@ -1550,16 +1552,19 @@ ownership, add `--user "$(id -u):$(id -g)"` to the `docker run` in `run.sh`.
 `run.sh` stops loudly rather than continuing on a bad assumption. Here's each
 message.
 
-### `STOPPING: no commits were made.`
+### `STOPPING: no PR was opened and no commits are visible.`
 
-The agent produced nothing. Almost always the model failing at tool calls.
+The agent produced nothing. Almost always the model failing at tool calls (or
+a free endpoint that vanished or hit its rate limit).
 
 ```
-$ jq -r 'select(.type=="tool_use") | .tool // .name' logs/<latest>.jsonl | sort | uniq -c
+$ jq -r 'select(.type=="tool_use") | .part.tool // .tool // .name' logs/<latest>.jsonl | sort | uniq -c
 ```
 
-No `bash` or `edit` entries → change the model in `opencode.json`. Some entries
-but it gave up → the item is probably too big; split it in `PLAN.md`.
+No `bash` or `edit` entries → change the model in `opencode.json`, or let the
+loop switch by itself next time: `--fallback-models vendor/a,vendor/b` (it
+redoes the item with the next model instead of stopping). Some entries but it
+gave up → the item is probably too big; split it in `PLAN.md`.
 
 ### `STOPPING: commits exist but no pull request was opened.`
 
