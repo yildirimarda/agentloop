@@ -26,6 +26,7 @@
 #                          config     opencode.json, Dockerfile.agent
 #                          plan       PLAN.md, AGENTS.md
 #                          claude     CLAUDE.md, .mcp.json, .claude/settings.json
+#                          skills     .agents/skills/agentloop-*/SKILL.md
 #                        e.g. --only workflows,claude — for repos that already
 #                        have parts of the setup. Housekeeping (stamp,
 #                        .gitignore) still runs; later full --update fills in
@@ -38,7 +39,9 @@
 #   -h, --help           this
 #
 # File classes — nothing of yours is ever silently overwritten:
-#   managed  run.sh, setup-github.sh, workflows/automerge.yml
+#   managed  run.sh, setup-github.sh, workflows/automerge.yml, and the
+#            agentloop-* skills in .agents/skills/ (your own skills there
+#            are never touched)
 #            → replaced on --update. If a FOREIGN file with the same name
 #              exists on fresh install, yours is kept and ours lands as
 #              <file>.agentloop-new with a warning.
@@ -80,6 +83,15 @@ MANAGED_FILES=(
   run.sh
   setup-github.sh
   .github/workflows/automerge.yml
+  .agents/skills/agentloop-ci-fix/SKILL.md
+  .agents/skills/agentloop-ci-proposals/SKILL.md
+  .agents/skills/agentloop-dependencies/SKILL.md
+  .agents/skills/agentloop-graph-navigation/SKILL.md
+  .agents/skills/agentloop-merge-conflicts/SKILL.md
+  .agents/skills/agentloop-plan-items/SKILL.md
+  .agents/skills/agentloop-pull-request/SKILL.md
+  .agents/skills/agentloop-skill-authoring/SKILL.md
+  .agents/skills/agentloop-testing/SKILL.md
 )
 USER_FILES=(
   PLAN.md
@@ -121,6 +133,7 @@ file_group() {
     opencode.json|Dockerfile.agent)           echo config ;;
     PLAN.md|AGENTS.md)                        echo plan ;;
     CLAUDE.md|.mcp.json|.claude/settings.json) echo claude ;;
+    .agents/skills/*)                         echo skills ;;
     *)                                        echo other ;;
   esac
 }
@@ -149,8 +162,8 @@ done
 
 if [[ -n "$ONLY" ]]; then
   for g in ${ONLY//,/ }; do
-    case "$g" in scripts|workflows|config|plan|claude) : ;;
-      *) die "unknown --only group: '$g' (use scripts, workflows, config, plan, claude)" ;;
+    case "$g" in scripts|workflows|config|plan|claude|skills) : ;;
+      *) die "unknown --only group: '$g' (use scripts, workflows, config, plan, claude, skills)" ;;
     esac
   done
 fi
@@ -197,10 +210,18 @@ if (( UNINSTALL )); then
     if (( DRY )); then note "[dry] remove  ${nf#"$TARGET"/}"; else rm -f "$nf"; note "removed   ${nf#"$TARGET"/}"; fi
   done < <(find "$TARGET" -maxdepth 3 -name '*.agentloop-new' -not -path "$TARGET/.git/*" 2>/dev/null)
   if (( DRY )); then note "[dry] remove  .agentloop"; else rm -f "$STAMP"; note "removed   .agentloop"; fi
+  # Emptied agentloop-* skill directories go too; .agents/skills and .agents
+  # only when nothing of yours is left in them (rmdir refuses non-empty dirs).
+  if (( ! DRY )); then
+    for d in "$TARGET"/.agents/skills/agentloop-* "$TARGET/.agents/skills" "$TARGET/.agents"; do
+      if [[ -d "$d" ]]; then rmdir "$d" 2>/dev/null || true; fi
+    done
+  fi
   echo
   echo "Kept (they are yours now): PLAN.md, AGENTS.md, opencode.json,"
-  echo "Dockerfile.agent, ci.yml, release.yml, and the merged CLAUDE.md /"
-  echo ".mcp.json / .claude/settings.json — delete manually if unwanted."
+  echo "Dockerfile.agent, ci.yml, release.yml, your own skills in .agents/skills/,"
+  echo "and the merged CLAUDE.md / .mcp.json / .claude/settings.json — delete"
+  echo "manually if unwanted."
   exit 0
 fi
 
@@ -268,8 +289,18 @@ stored_hash() {
 }
 
 # ── Managed files: ours to replace, but never a stranger's ──────────────────
+# A file this installer knows about may be missing from the template it is
+# installing — e.g. the installer from main with `--ref` pointing at an older
+# release. Skip it instead of failing the whole install.
+in_template() {
+  [[ -e "$SRC/template/$1" ]] && return 0
+  note "skipped    $1 (not part of agentloop $VERSION)"
+  return 1
+}
+
 copy_managed() {
   local rel="$1" src="$SRC/template/$1" dest="$TARGET/$1"
+  in_template "$rel" || return 0
   if [[ ! -e "$dest" ]]; then
     (( DRY )) && { note "[dry] install   $rel"; return; }
     mkdir -p "$(dirname "$dest")"; cp "$src" "$dest"; note "installed  $rel"
@@ -291,6 +322,7 @@ copy_managed() {
 # ── User files: installed once, never touched again ─────────────────────────
 copy_user() {
   local rel="$1" src="$SRC/template/$1" dest="$TARGET/$1"
+  in_template "$rel" || return 0
   if [[ ! -e "$dest" ]]; then
     (( DRY )) && { note "[dry] install   $rel"; return; }
     mkdir -p "$(dirname "$dest")"; cp "$src" "$dest"; note "installed  $rel"
@@ -436,7 +468,9 @@ if (( ! DRY )); then
     echo "installed=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [[ -n "$ONLY" ]] && echo "only=$ONLY"
     for f in "${USER_FILES[@]}"; do
-      if selected "$f"; then echo "hash:$f=$(filehash "$SRC/template/$f")"; fi
+      if selected "$f" && [[ -e "$SRC/template/$f" ]]; then
+        echo "hash:$f=$(filehash "$SRC/template/$f")"
+      fi
     done
   } > "$STAMP"
 

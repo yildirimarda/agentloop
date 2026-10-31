@@ -158,6 +158,23 @@ read `AGENTS.md` natively (Codex: git root down to cwd, concatenated);
 Claude Code reads `CLAUDE.md`, which imports it (`@AGENTS.md`). A new engine
 needs an equivalent bridge so `AGENTS.md` stays the single source of truth.
 
+## Skills reach every engine from one directory
+
+Skills live once, in the portable [Agent Skills](https://agentskills.io)
+location `.agents/skills/<name>/SKILL.md`:
+
+| Engine | How it finds them |
+|---|---|
+| opencode | native: walks `.agents/skills/` (also `.opencode/skills/`, `.claude/skills/`); loads via its `skill` tool |
+| codex | native: scans `.agents/skills/` from cwd up to the repo root |
+| claude | bridged: `run.sh` mounts `.agents/skills/` read-only at `/home/agent/.claude/skills` (Claude's personal skills dir) for claude sessions only — no duplicate tree in the repo, and opencode never sees the same skills twice |
+| *(new)* | must see `.agents/skills/` natively or get an equivalent read-only bridge |
+
+Prompts don't rely on implicit triggering (weaker in headless modes): when a
+session needs a specific skill, the prompt names it with its path, which
+works in any engine — at worst as a plain file read. `run.sh` only names
+skills that are actually installed.
+
 ## Checklist for adding an engine
 
 1. Install its CLI in `Dockerfile.agent`.
@@ -167,7 +184,10 @@ needs an equivalent bridge so `AGENTS.md` stays the single source of truth.
    fixtures to `tests/install-test.sh` §11.
 4. Ship its guardrail config in `template/` and register it in `install.sh`
    (managed or merged class), asserting it in the test suite.
-5. Bridge `AGENTS.md` into whatever rules file it reads.
+5. Bridge `AGENTS.md` into whatever rules file it reads, and make
+   `.agents/skills/` visible to it (natively or by a read-only mount).
 6. Wire its credential: keychain entry → `in_container` env var, fetched only
    when that engine is selected.
 7. Document the keychain step in `docs/SETUP.md`.
+8. Add a `tests/loop-test.sh` scenario that runs the loop with
+   `--engine <new>` (the stub engine answers to any name you symlink to it).

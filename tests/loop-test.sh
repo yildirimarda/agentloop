@@ -17,7 +17,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# KEEP_TMP=1 keeps the projects, prompts and fake-GitHub state for inspection.
+if [[ "${KEEP_TMP:-0}" == 1 ]]; then
+  trap 'echo "kept: $TMP" >&2' EXIT
+else
+  trap 'rm -rf "$TMP"' EXIT
+fi
 
 OUT="$TMP/out.txt"
 fail() {
@@ -298,6 +303,13 @@ case "$prompt" in
     if [[ "${FAKE_DISCOVER:-0}" == 1 ]]; then
       printf '%s\n' "- [ ] Follow-up discovered while doing $slug" >> PLAN.md
       git add PLAN.md
+    fi
+    if [[ "${FAKE_LEARN:-0}" == 1 ]]; then
+      mkdir -p .agents/skills/run-local-db
+      printf '%s\n' '---' 'name: run-local-db' \
+        'description: Start the local database for integration tests. Use before running tests/integration.' \
+        '---' '' '1. docker compose up -d db' > .agents/skills/run-local-db/SKILL.md
+      git add .agents/skills/run-local-db/SKILL.md
     fi ;;
 esac
 git commit -qm "feat: work on $slug"
@@ -342,7 +354,7 @@ PLAN
     printf '%s\n' "STALL_MIN=0" "TIMEOUT_MIN=1" > .agentloop.local
     git add -A && git commit -qm "chore: install agentloop" && git push -q -u origin main 2>/dev/null
   )
-  unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS
+  unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN
 }
 
 # run_sh ARGS... — run the project's run.sh; output in $OUT, status in $RC.
@@ -405,6 +417,7 @@ run_sh --ci-retries 1
 [[ "$RC" == 0 ]] || fail "ci-fix: loop exited $RC"
 expect_out "automatic fix attempt 1/1"
 last_prompt | grep -q "assert 1 == 2" || fail "ci-fix: failing log not handed to the agent"
+last_prompt | grep -q "Load the skill agentloop-ci-fix" || fail "ci-fix: prompt does not load the ci-fix skill"
 remote_plan | grep -qx -- "- \[x\] Add the first feature" || fail "ci-fix: item not ticked after the fix merged"
 
 # ── 6. Red CI with retries exhausted → stop, branch kept ─────────────────────
@@ -464,5 +477,29 @@ run_sh --replan
 [[ "$RC" == 0 ]] || fail "replan exited $RC"
 expect_out "Plan PR #1 opened"
 grep -qx plan "$FAKE_STATE/gh/pr/1/labels" || fail "replan PR not labelled plan"
+
+# ── 13. Skills: named in prompts; a recorded project skill is reported ───────
+new_project skills
+export FAKE_LEARN=1
+run_sh
+[[ "$RC" == 0 ]] || fail "skills: loop exited $RC"
+grep -q "agentloop-graph-navigation" "$FAKE_STATE/prompt_1.txt" || fail "item prompt does not name the skills"
+grep -q "record it as a project skill" "$FAKE_STATE/prompt_1.txt" || fail "item prompt lacks the learning clause"
+expect_out "the agent recorded a skill for later sessions:"
+expect_out "+ run-local-db"
+expect_out "skills:        1 recorded"
+grep -q "/home/agent/.claude/skills" "$FAKE_STATE/docker_mounts" && fail "opencode session got the claude skills mount"
+
+new_project nolearn
+run_sh --no-learn
+grep -q "Do not create or modify skills" "$FAKE_STATE/prompt_1.txt" || fail "--no-learn not reflected in the prompt"
+
+# ── 14. Claude engine: skills bridged by a read-only mount; cost reported ────
+new_project claude
+run_sh --engine claude
+[[ "$RC" == 0 ]] || fail "claude engine: loop exited $RC"
+grep -q "/.agents/skills:/home/agent/.claude/skills:ro" "$FAKE_STATE/docker_mounts" \
+  || fail "claude engine: .agents/skills not mounted as Claude's skills directory"
+expect_out 'session cost: $0.25'
 
 echo "loop-test OK"

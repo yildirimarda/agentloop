@@ -26,6 +26,15 @@ EXPECTED=(
   .github/workflows/automerge.yml .github/workflows/release.yml
   PLAN.md AGENTS.md opencode.json Dockerfile.agent .github/workflows/ci.yml
   .agentloop .gitignore
+  .agents/skills/agentloop-ci-fix/SKILL.md
+  .agents/skills/agentloop-ci-proposals/SKILL.md
+  .agents/skills/agentloop-dependencies/SKILL.md
+  .agents/skills/agentloop-graph-navigation/SKILL.md
+  .agents/skills/agentloop-merge-conflicts/SKILL.md
+  .agents/skills/agentloop-plan-items/SKILL.md
+  .agents/skills/agentloop-pull-request/SKILL.md
+  .agents/skills/agentloop-skill-authoring/SKILL.md
+  .agents/skills/agentloop-testing/SKILL.md
 )
 for f in "${EXPECTED[@]}"; do
   [[ -e "$f" ]] || fail "missing after install: $f"
@@ -321,6 +330,56 @@ assert d['tool_output']['max_lines'] == 500
 assert d['provider']['openrouter']['options']['setCacheKey'] is True
 " || fail "opencode.json token-budget settings missing"
 grep -q "Output discipline" AGENTS.md || fail "AGENTS.md lacks output-discipline section"
+
+# ── 13c. Skills: shipped, valid, listed, owned correctly ─────────────────────
+# Every template skill directory is registered in install.sh (and vice versa)
+# and passes the same checks the engines apply (name = dir, description).
+for d in "$ROOT"/template/.agents/skills/*/; do
+  s="$(basename "$d")"
+  grep -q "^  .agents/skills/$s/SKILL.md$" "$ROOT/install.sh" || fail "skill $s is not in install.sh MANAGED_FILES"
+done
+(
+  eval "$(sed -n '/^skill_field()/,/^}$/p;/^skill_problems()/,/^}$/p' run.sh)"
+  for f in "$ROOT"/template/.agents/skills/*/SKILL.md; do
+    probs="$(skill_problems "$f")"
+    [[ -z "$probs" ]] || fail "template skill $f: $probs"
+    case "$(basename "$(dirname "$f")")" in agentloop-*) : ;; *) fail "template skill without agentloop- prefix: $f" ;; esac
+    lines="$(wc -l < "$f" | tr -d ' ')"
+    (( lines <= 120 )) || fail "template skill $f has $lines lines — keep skills short (progressive disclosure)"
+  done
+  exit 0
+) || exit 1
+sk_out="$(./run.sh --skills)" || fail "run.sh --skills failed on a fresh install"
+echo "$sk_out" | grep -q "agentloop-ci-fix" || fail "--skills does not list agentloop-ci-fix"
+# a malformed project skill is flagged (and makes --skills exit 1)
+mkdir -p .agents/skills/Bad_Skill && printf '%s\n' '---' 'name: other' '---' 'body' > .agents/skills/Bad_Skill/SKILL.md
+if ./run.sh --skills > "$TMP/sk.txt" 2>&1; then fail "--skills accepted a malformed skill"; fi
+grep -q "does not match its directory" "$TMP/sk.txt" || fail "--skills did not explain the name mismatch"
+rm -rf .agents/skills/Bad_Skill
+# a managed skill is refreshed on --update; a project skill is never touched
+echo "tamper" >> .agents/skills/agentloop-testing/SKILL.md
+mkdir -p .agents/skills/run-db && printf '%s\n' '---' 'name: run-db' 'description: Start the local db.' '---' > .agents/skills/run-db/SKILL.md
+"$ROOT/install.sh" . --update >/dev/null
+grep -q "^tamper" .agents/skills/agentloop-testing/SKILL.md && fail "--update did not refresh a managed skill"
+[[ -f .agents/skills/run-db/SKILL.md ]] || fail "--update touched a project skill"
+# --only skills installs the skills and nothing else
+mkdir -p "$TMP/onlysk" && (cd "$TMP/onlysk" && git init -q . && git commit -q --allow-empty -m init \
+  && "$ROOT/install.sh" . --only skills >/dev/null) || fail "--only skills failed"
+[[ -f "$TMP/onlysk/.agents/skills/agentloop-ci-fix/SKILL.md" ]] || fail "--only skills: skills missing"
+[[ -e "$TMP/onlysk/run.sh" ]] && fail "--only skills installed run.sh"
+# an older template without skills (installer from main + --ref <old tag>)
+cp -R "$ROOT" "$TMP/oldsrc" && rm -rf "$TMP/oldsrc/template/.agents"
+mkdir -p "$TMP/oldref" && (cd "$TMP/oldref" && git init -q . && git commit -q --allow-empty -m init)
+old_out="$("$TMP/oldsrc/install.sh" "$TMP/oldref")" || fail "install from a template without skills failed"
+echo "$old_out" | grep -q "skipped    .agents/skills/agentloop-ci-fix/SKILL.md" || fail "missing template file not reported as skipped"
+[[ -x "$TMP/oldref/run.sh" ]] || fail "install from an older template did not install run.sh"
+# --uninstall removes agentloop's skills, keeps the project's
+"$ROOT/install.sh" . --uninstall >/dev/null
+[[ -e .agents/skills/agentloop-ci-fix ]] && fail "--uninstall left an agentloop skill directory"
+[[ -f .agents/skills/run-db/SKILL.md ]] || fail "--uninstall removed a project skill"
+"$ROOT/install.sh" "$TMP/onlysk" --uninstall >/dev/null
+[[ -e "$TMP/onlysk/.agents" ]] && fail "--uninstall left an empty .agents/ behind"
+"$ROOT/install.sh" . >/dev/null 2>&1 || fail "reinstall after skills uninstall failed"
 
 # ── 14. The loop itself, end to end ──────────────────────────────────────────
 # Stubbed docker/gh/keychain/engine, real git against a bare "GitHub" repo.

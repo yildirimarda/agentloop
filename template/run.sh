@@ -22,6 +22,8 @@ CONTAINER_NAME=""
 AGENT_SEQ=0
 WD_PID=""
 SNAP=""
+SKILLSNAP=""
+SKILLS_ADDED=0
 
 MODEL=""
 USE_GRAPH=1
@@ -30,8 +32,10 @@ MAX_GROWTH=10
 AUTO_REPLAN=0
 AMBITIOUS=0
 HEADROOM=0
+LEARN=1                 # sessions may record project skills in .agents/skills/
 ARG_TEXT=""
 ANTHROPIC_KEY=""
+SKILLS_DIR=".agents/skills"
 
 # ── Local per-machine overrides: .agentloop.local (gitignored) ───────────────
 # Change model/engine without touching git. KEY=VALUE lines, no quotes:
@@ -40,12 +44,13 @@ ANTHROPIC_KEY=""
 #   CI_RETRIES=5
 #   TIMEOUT_MIN=40           (minutes to wait for a PR merge)
 #   STALL_MIN=45             (kill a session silent this long; 0 = off)
+#   LEARN=0                  (forbid sessions to record project skills)
 # Precedence: CLI flags > this file > committed defaults (opencode.json).
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -63,6 +68,8 @@ Modes
       --replan              audit the code against PLAN.md and correct it
       --task "text"         one-off task, ignores PLAN.md
       --next                dry run: print the next item. No API calls
+      --skills              list the skills sessions can load (.agents/skills/)
+                            and flag malformed ones. No API calls
       --reindex             rebuild the Graphify knowledge graph from scratch
       --github-setup        run setup-github.sh inside the container using the
                             "gh-admin" keychain token (no host gh login needed)
@@ -72,6 +79,8 @@ Options
                             claude (paid; Claude Code + Anthropic API key),
                             or codex (paid; OpenAI Codex CLI + CODEX_API_KEY)
       --no-discover         forbid the agent from adding items to PLAN.md
+      --no-learn            forbid the agent from recording project skills
+                            (persist: LEARN=0 in .agentloop.local)
       --max-growth N        abort if the plan grows by more than N items
                             over this run (default 10)
       --no-wait             don't wait for the PR to merge before the next item
@@ -122,6 +131,7 @@ while (( $# )); do
     --replan)       MODE="replan"; shift ;;
     --task)         MODE="task"; ARG_TEXT="${2:?--task needs text}"; shift 2 ;;
     --next)         MODE="next"; shift ;;
+    --skills)       MODE="skills"; shift ;;
     --reindex)      MODE="reindex"; shift ;;
     --github-setup) MODE="ghsetup"; shift ;;
     -f|--file)      f="${2:?-f needs a path}"
@@ -129,6 +139,7 @@ while (( $# )); do
                     ARG_TEXT="$(cat "$f")"; shift 2 ;;
     -e|--engine)    ENGINE="${2:?--engine needs opencode, claude or codex}"; shift 2 ;;
     --no-discover)  DISCOVER=0; shift ;;
+    --no-learn)     LEARN=0; shift ;;
     --max-growth)   MAX_GROWTH="${2:?--max-growth needs a number}"; shift 2 ;;
     --no-wait)      WAIT=0; shift ;;
     --timeout)      TIMEOUT_MIN="${2:?--timeout needs minutes}"; shift 2 ;;
@@ -171,6 +182,50 @@ plan_next() {
     | sed -E 's/^[[:space:]]*- \[ \][[:space:]]*//'
 }
 
+# ── Skills (.agents/skills/<name>/SKILL.md — the portable location) ──────────
+# One value from a SKILL.md frontmatter (single-line fields only; quotes are
+# stripped). Prints nothing when the field or the frontmatter is missing.
+skill_field() {
+  awk -v key="$2" '
+    NR == 1 { if ($0 !~ /^---[[:space:]]*$/) exit; next }
+    /^---[[:space:]]*$/ { exit }
+    index($0, key ":") == 1 {
+      v = substr($0, length(key) + 2)
+      sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^'"'"'.*'"'"'$/) v = substr(v, 2, length(v) - 2)
+      print v; exit
+    }' "$1" 2>/dev/null
+}
+
+# Problems with one skill, one per line (empty = valid). Same rules every
+# engine applies: name = directory, lowercase-hyphen, description 1-1024 chars.
+skill_problems() {
+  local f="$1" dir name desc
+  dir="$(basename "$(dirname "$f")")"
+  name="$(skill_field "$f" name)"
+  desc="$(skill_field "$f" description)"
+  [[ -n "$name" ]] || echo "no 'name' in the frontmatter"
+  [[ -z "$name" || "$name" == "$dir" ]] || echo "name '$name' does not match its directory '$dir'"
+  [[ "$dir" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || echo "directory name must be lowercase letters, digits and single hyphens"
+  [[ -n "$desc" ]] || echo "no single-line 'description' in the frontmatter"
+  (( ${#desc} <= 1024 )) || echo "description is longer than 1024 characters"
+}
+
+# Sorted list of installed skill files (one path per line).
+skills_list() {
+  ls -1 "$SKILLS_DIR"/*/SKILL.md 2>/dev/null | sort
+}
+
+# The subset of the given skill names that is installed, comma-separated —
+# prompts name a skill only when it exists (an --only install may lack them).
+skills_present() {
+  local s out=""
+  for s in "$@"; do
+    [[ -f "$SKILLS_DIR/$s/SKILL.md" ]] && out="${out:+$out, }$s"
+  done
+  printf '%s' "$out"
+}
+
 # Secrets come from the macOS keychain. secret_optional prints nothing when an
 # entry is missing; require_secret assigns into a variable IN THIS SHELL and
 # dies here — a `die` inside "$(...)" would only end the subshell and let the
@@ -202,6 +257,43 @@ if [[ "$MODE" == "next" ]]; then
     echo
     echo "note: no '- [ ]' items found. If PLAN.md uses another format"
     echo "(tables, prose, bare [x] lines), convert it:  ./run.sh --replan"
+  fi
+  exit 0
+fi
+
+# ── Skills listing ───────────────────────────────────────────────────────────
+if [[ "$MODE" == "skills" ]]; then
+  _files="$(skills_list)"
+  if [[ -z "$_files" ]]; then
+    echo "no skills in $SKILLS_DIR/ — install agentloop's with: install.sh . --update"
+    exit 0
+  fi
+  _bad=0
+  for _kind in managed project; do
+    if [[ "$_kind" == managed ]]; then echo "agentloop skills (managed — replaced on every update):"
+    else echo; echo "project skills (yours, or recorded by earlier sessions):"; fi
+    _n=0
+    while IFS= read -r _f; do
+      [[ -n "$_f" ]] || continue
+      _dir="$(basename "$(dirname "$_f")")"
+      case "$_dir" in agentloop-*) [[ "$_kind" == managed ]] || continue ;;
+                      *)           [[ "$_kind" == project ]] || continue ;; esac
+      _n=$(( _n + 1 ))
+      _desc="$(skill_field "$_f" description)"
+      (( ${#_desc} > 88 )) && _desc="${_desc:0:85}..."
+      printf '  %-28s %s\n' "$_dir" "${_desc:-<no description>}"
+      _probs="$(skill_problems "$_f")"
+      if [[ -n "$_probs" ]]; then
+        _bad=$(( _bad + 1 ))
+        printf '%s\n' "$_probs" | sed 's/^/      ⚠ /'
+      fi
+    done <<< "$_files"
+    (( _n )) || echo "  (none)"
+  done
+  if (( _bad )); then
+    echo
+    echo "$_bad skill(s) have problems — engines may skip them. Format: skill agentloop-skill-authoring."
+    exit 1
   fi
   exit 0
 fi
@@ -304,6 +396,16 @@ mkdir -p logs
 [[ "$MODE" == "plan" && ! -f "$PLAN" ]] && \
   die "$PLAN not found. Bootstrap it first:  ./run.sh --init \"<project description>\""
 
+# Claude Code reads project skills only from .claude/skills/, while opencode
+# and codex read the portable .agents/skills/. For the claude engine that
+# directory is mounted read-only as Claude's personal skills directory inside
+# the container: the repo gains no duplicate tree, every engine sees the same
+# skills, and the mount cannot be written through.
+SKILLS_MOUNT=""
+if [[ "$ENGINE" == "claude" && -d "$REPO_DIR/$SKILLS_DIR" ]]; then
+  SKILLS_MOUNT="$REPO_DIR/$SKILLS_DIR:/home/agent/.claude/skills:ro"
+fi
+
 # ── Docker wrappers ──────────────────────────────────────────────────────────
 in_container() {
   # agent-venv shadows /work/.venv with its own named volume so the
@@ -323,6 +425,7 @@ in_container() {
     -v agent-venv:/work/.venv \
     -v agent-cache:/home/agent/.cache \
     -v agent-claude-home:/home/agent/.claude \
+    ${SKILLS_MOUNT:+-v "$SKILLS_MOUNT"} \
     -e OPENROUTER_API_KEY="$OPENROUTER_KEY" \
     -e ANTHROPIC_API_KEY="$ANTHROPIC_KEY" \
     -e CODEX_API_KEY="$CODEX_KEY" \
@@ -677,6 +780,7 @@ cleanup_exit() {
   stop_watchdog
   kill_run_containers
   [[ -n "$SNAP" ]] && rm -f "$SNAP"
+  [[ -n "$SKILLSNAP" ]] && rm -f "$SKILLSNAP"
   return 0
 }
 
@@ -836,6 +940,7 @@ CI failed on pull request #$2, which implements this plan item:
 
     $1
 
+$(skill_load_line agentloop-ci-fix)
 You are already on the PR's branch. Stay on it — do not create a new branch
 and do not touch main. PLAN.md on this branch may already show the item as
 [x] — that is expected (an earlier session ticked it; the tick only reaches
@@ -912,7 +1017,44 @@ show_plan_additions() {
   printf '%s\n' "$added" | sed -E 's/^[[:space:]]*- \[ \][[:space:]]*/    + /'
 }
 
+# Skills that reached main with this merge: the loop's memory growing. Shown
+# like plan additions, so a human sees (and can prune) what sessions record.
+show_new_skills() {
+  local before="$1" added f
+  [[ -f "$before" ]] || return 0
+  added="$(skills_list | comm -13 "$before" - 2>/dev/null)"
+  [[ -n "$added" ]] || return 0
+  echo "  the agent recorded a skill for later sessions:"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    SKILLS_ADDED=$(( SKILLS_ADDED + 1 ))
+    printf '    + %s — %s\n' "$(basename "$(dirname "$f")")" \
+      "$(skill_field "$f" description | cut -c1-90)"
+  done <<< "$added"
+}
+
 # ── Prompt fragments ─────────────────────────────────────────────────────────
+# "Load the skill X first ..." when X is installed; nothing otherwise.
+skill_load_line() {
+  [[ -f "$SKILLS_DIR/$1/SKILL.md" ]] || return 0
+  printf 'Load the skill %s first (%s/%s/SKILL.md) and follow it.\n' "$1" "$SKILLS_DIR" "$1"
+}
+
+# Sessions may leave the next session a project skill — the loop's memory.
+learn_clause() {
+  if (( ! LEARN )); then
+    echo "Do not create or modify skills in $SKILLS_DIR/ in this session."
+    return
+  fi
+  cat <<EOF
+If you worked out something non-obvious and reusable about this project — how
+   to run, test, debug or seed part of it, or a trap that cost you attempts —
+   record it as a project skill in $SKILLS_DIR/<name>/SKILL.md so the next
+   session does not rediscover it (skill agentloop-skill-authoring). At most
+   one new skill; never touch agentloop-* skills; name it in the PR description.
+EOF
+}
+
 discovery_clause() {
   (( DISCOVER )) || { echo "Do not add, remove or reword any item in PLAN.md. You may only tick your own item."; return; }
 cat <<'EOF'
@@ -971,6 +1113,7 @@ Your job in this session is ONLY to produce the plan. Do not implement features.
      environment variables with validation", not "Config".
    - Aim for 8 to 20 items. Do not plan the whole product; plan the first
      working version. You will be able to add more as you build.
+   $(skill_load_line agentloop-plan-items)
 
 2. Create the minimum scaffolding the plan needs: project layout, dependency
    manifest, a placeholder test so the test command passes, and a README with
@@ -988,6 +1131,7 @@ EOF
 }
 
 prompt_replan() {
+skill_load_line agentloop-plan-items
 cat <<'EOF'
 Audit the repository against PLAN.md and correct the plan. Do not implement
 features in this session.
@@ -1008,9 +1152,11 @@ features in this session.
    bare [x] lines, emoji markers — rewrite it into this format, preserving
    every item's meaning and done/not-done status. The loop can only parse
    "- [ ]" lines, so anything else is invisible to it.
-7. Commit with a message starting "chore: ", push, and open a PR with:
+7. Project skills in .agents/skills/ (everything except agentloop-*): fix or
+   delete any that are stale, wrong or duplicated, and say why.
+8. Commit with a message starting "chore: ", push, and open a PR with:
      gh pr create --fill --label plan
-8. Stop.
+9. Stop.
 
 This is the one session where you are allowed to restructure PLAN.md freely.
 EOF
@@ -1057,10 +1203,17 @@ Do this:
    ticked it when it created the branch. Leave it. Only if you finish this
    session WITHOUT completing the item, revert it to "- [ ]".
 5. $(discovery_clause)
-6. Follow the workflow in AGENTS.md: branch, commit, push, and open a pull
+6. $(learn_clause)
+7. Follow the workflow in AGENTS.md: branch, commit, push, and open a pull
    request with the "automated" label.
-7. Stop. Do not wait for CI, do not merge, do not start the next item.
+8. Stop. Do not wait for CI, do not merge, do not start the next item.
 EOF
+  local skills
+  skills="$(skills_present agentloop-graph-navigation agentloop-testing agentloop-pull-request)"
+  if [[ -n "$skills" ]]; then
+    printf '\nSkills that usually matter here (%s/<name>/SKILL.md — load each when it applies): %s.\n' \
+      "$SKILLS_DIR" "$skills"
+  fi
 }
 
 # Replan is used both as a standalone mode and by --auto-replan when the plan
@@ -1181,6 +1334,7 @@ esac
 # Portable template form: BSD mktemp accepts `-t prefix`, GNU mktemp rejects
 # it ("too few X's") — this spelling works on macOS and Linux alike.
 SNAP="$(mktemp "${TMPDIR:-/tmp}/agentloop-planbefore.XXXXXX")"
+SKILLSNAP="$(mktemp "${TMPDIR:-/tmp}/agentloop-skillsbefore.XXXXXX")"
 
 completed_n=0
 total_added=0
@@ -1192,6 +1346,7 @@ for (( i = 1; i <= COUNT; i++ )); do
   before_remaining="$(plan_remaining)"
   before_done="$(plan_done_count)"
   cp "$PLAN" "$SNAP" 2>/dev/null || true
+  skills_list > "$SKILLSNAP" 2>/dev/null || true
 
   if [[ "$before_remaining" -eq 0 ]]; then
     echo
@@ -1329,6 +1484,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     total_added=$(( total_added + added ))
     show_plan_additions "$SNAP"
   fi
+  show_new_skills "$SKILLSNAP"
 
   if (( total_added > MAX_GROWTH )); then
     echo
@@ -1349,6 +1505,7 @@ echo
 rule
 echo "completed:     $completed_n item(s)"
 echo "added to plan: $total_added item(s)"
+if (( SKILLS_ADDED > 0 )); then echo "skills:        $SKILLS_ADDED recorded (./run.sh --skills to review)"; fi
 echo "plan:          $(plan_done_count) done, $(plan_remaining) remaining"
 n="$(plan_next || true)"
 # An if, not `[[ ]] && echo`: as the script's last command, a false test

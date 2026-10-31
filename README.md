@@ -69,7 +69,7 @@ version changed, it lands next to yours as `<file>.agentloop-new` so you can
 diff and adopt what you want. An existing `ci.yml` is never touched at all.
 The installer also has `--check` (installed vs newest release, changes
 nothing), `--uninstall` (removes only agentloop's managed files and stamp;
-everything of yours stays), and `--only scripts,workflows,config,plan,claude`
+everything of yours stays), and `--only scripts,workflows,config,plan,claude,skills`
 to install a subset into repos that already have parts of the setup.
 
 ## What gets installed
@@ -81,6 +81,7 @@ Three file classes — **nothing of yours is ever silently overwritten**:
 | `run.sh` | managed | Refreshed on `--update` if it's ours (`.agentloop` stamp). A foreign file with the same name is kept; ours lands as `.agentloop-new` with a warning |
 | `setup-github.sh` | managed | Same |
 | `.github/workflows/automerge.yml` | managed | Same |
+| `.agents/skills/agentloop-*/SKILL.md` | managed | Same. Your own skills in `.agents/skills/` (and ones sessions record) are never touched |
 | `.github/workflows/release.yml` | yours | Kept once installed — projects legitimately customize `release-type` (e.g. `simple` for tag-derived dynamic versions) |
 | `CLAUDE.md` | **merged** | Your content stays; an `@AGENTS.md` import line is appended (once) |
 | `.mcp.json` | **merged** | The `graphify` server is added alongside your existing MCP servers |
@@ -114,6 +115,18 @@ fine-grained PAT, branch protection — none of which relies on the model
 behaving). Graphify gives the agent a knowledge graph of the codebase over
 MCP, so it queries relationships instead of reading whole files, which is what
 makes free-tier token budgets workable.
+
+## Skills: playbooks on demand, memory across sessions
+
+Situational know-how — fixing a red CI run, resolving a `PLAN.md` conflict,
+proposing CI changes, writing items, testing without flakes — ships as
+[Agent Skills](https://agentskills.io) in `.agents/skills/`, so `AGENTS.md`
+(re-sent on every step, and the prompt-cache prefix) stays lean. All three
+engines see the same skills: OpenCode and Codex natively, Claude Code through
+a read-only mount. Prompts name the skill a session needs, so loading never
+depends on the model choosing to. And sessions may record what they learned
+about your project as new skills — every session starts cold, but recorded
+procedures carry forward. `./run.sh --skills` lists and validates them.
 
 ## Repository layout
 

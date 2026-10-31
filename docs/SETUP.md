@@ -53,6 +53,7 @@ You write the plan once — or have the agent draft it — then run `./run.sh`.
   - [Optional second engine: paid Claude Code](#optional-second-engine-paid-claude-code)
   - [How the loop stays honest](#how-the-loop-stays-honest)
   - [Graphify: why token usage stays low](#graphify-why-token-usage-stays-low)
+  - [Skills](#skills)
   - [Why Docker means less configuration](#why-docker-means-less-configuration)
   - [Division of responsibility](#division-of-responsibility)
   - [Token and context budget](#token-and-context-budget)
@@ -102,7 +103,9 @@ Two guardrails keep discovery from running away:
 ```
 repo/
 ├── PLAN.md                        the agent's queue and notebook
-├── AGENTS.md                      the workflow contract (both engines)
+├── AGENTS.md                      the workflow contract (every engine)
+├── .agents/skills/                on-demand playbooks: agentloop-* (managed)
+│                                  plus your own / ones sessions recorded
 ├── CLAUDE.md                      one-line import of AGENTS.md for Claude Code
 ├── opencode.json                  OpenCode: permissions, guardrails, Graphify MCP
 ├── .claude/settings.json          Claude Code: the same deny guardrails
@@ -1110,6 +1113,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `./run.sh --replan` | Audit code against `PLAN.md` and restructure it |
 | `./run.sh --task "text"` | One-off task, ignores `PLAN.md` |
 | `./run.sh --next` | Dry run: print the next item. No API calls |
+| `./run.sh --skills` | List the skills sessions can load, flag malformed ones. No API calls |
 | `./run.sh --reindex` | Rebuild the Graphify graph from scratch |
 | `./run.sh --github-setup` | Branch protection + auto-merge + labels, from inside the container (`gh-admin` keychain token) |
 | `./run.sh --help` | All flags |
@@ -1118,6 +1122,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 |---|---|---|
 | `-e, --engine NAME` | `opencode` | `claude` runs the same loop on paid Claude Code — see the next section |
 | `--no-discover` | off | You want the plan consumed, not extended |
+| `--no-learn` | off | Sessions may not record project skills (see [Skills](#skills)) |
 | `--max-growth N` | 10 | Young project: raise it. Tight scope: lower it |
 | `--ci-retries N` | 1 | On a red PR, feed the failing CI log back to the agent on the same branch, up to N times (0 = off) |
 | `--auto-replan` | off | When the plan runs out mid-loop, run one replan session (plan PR for your review) instead of just stopping |
@@ -1131,7 +1136,8 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 
 **Per-machine defaults without touching git:** put `KEY=VALUE` lines in
 `.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
-`ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`.
+`ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`,
+`HEADROOM`, `STALL_MIN`, `LEARN`.
 Precedence: CLI flags > `.agentloop.local` > committed defaults
 (`opencode.json`). This is the intended way to switch models freely — the
 committed config stays the team/repo default; your experiments never require
@@ -1299,6 +1305,65 @@ Mechanics, all handled for you:
 One caveat: edges marked `INFERRED` are model-generated guesses rather than
 parsed facts. `AGENTS.md` tells the agent to verify those against the real file
 before relying on them.
+
+---
+
+## Skills
+
+`AGENTS.md` goes into every prompt, so everything in it costs tokens on every
+step of every session — and every edit invalidates the prompt cache. Know-how
+that only matters sometimes (fixing a red CI run, resolving a `PLAN.md`
+conflict, writing CI proposals) lives in **skills** instead: folders under
+`.agents/skills/<name>/SKILL.md` in the [Agent Skills](https://agentskills.io)
+format. Sessions always see each skill's name and one-line description, and
+load the body only when it applies.
+
+Shipped with agentloop (managed — refreshed by `install.sh --update`):
+
+| Skill | Used when |
+|---|---|
+| `agentloop-graph-navigation` | finding where to work through the knowledge graph (MCP or `graphify` CLI) |
+| `agentloop-testing` | writing deterministic tests that prove the item |
+| `agentloop-pull-request` | self-review, the right label, a PR description a reviewer can trust |
+| `agentloop-plan-items` | `--init`, `--replan`, and appending discovered work |
+| `agentloop-merge-conflicts` | a rejected push; `PLAN.md`, lockfile and generated-file conflicts |
+| `agentloop-dependencies` | adding or upgrading a dependency, lockfile discipline |
+| `agentloop-ci-fix` | a red CI run handed back by `--ci-retries` |
+| `agentloop-ci-proposals` | plan items about `.github/workflows/` |
+| `agentloop-skill-authoring` | recording a project skill for later sessions |
+
+**Every engine sees the same skills.** OpenCode and Codex read
+`.agents/skills/` natively. Claude Code only reads `.claude/skills/`, so for
+`--engine claude` the loop mounts `.agents/skills/` read-only as Claude's
+skills directory inside the container — nothing is duplicated in your repo.
+Prompts also name the skill a session needs (the CI-fix prompt starts with
+"Load the skill agentloop-ci-fix"), so loading never depends on a model
+choosing to.
+
+**Your own skills** go in the same directory under any name not starting
+with `agentloop-` — the installer never touches them. A good project skill is
+a procedure the agent would otherwise rediscover: how to start the local
+database for integration tests, how to regenerate fixtures, which flag the
+Windows job needs. `./run.sh --skills` lists everything and flags skills an
+engine would skip (name not matching its directory, missing description).
+
+**Sessions record skills too.** When a session works out something
+non-obvious about your project, it may save it as a project skill (at most
+one per session, named in its PR). After the merge the loop shows it, like
+plan additions:
+
+```
+  the agent recorded a skill for later sessions:
+    + run-local-db — Start the local database for integration tests. Use before ...
+```
+
+This is the loop's long-term memory: every session starts cold, but recorded
+skills carry hard-won procedures forward. Review them like any other change
+(they arrive in normal PRs); `--replan` prunes stale ones; `--no-learn` (or
+`LEARN=0` in `.agentloop.local`) turns recording off.
+
+For interactive Claude Code sessions on your own machine, link the skills you
+want into `.claude/skills/` (`ln -s ../../.agents/skills/run-local-db .claude/skills/`).
 
 ---
 
