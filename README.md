@@ -15,19 +15,43 @@ same loop — see [the engine contract](docs/ENGINES.md).
               ./run.sh -n 5
                    │
         ┌──────────▼───────────┐
-        │ bash picks the next  │   deterministic — the model never
-        │ "- [ ]" from PLAN.md │   chooses what to work on
-        └──────────┬───────────┘
+        │ bash picks the next  │   deterministic — the model never chooses
+        │ "- [ ]" from PLAN.md │   what to work on; branch, tick and graph
+        └──────────┬───────────┘   context are prepared before it starts
         ┌──────────▼───────────┐
-        │ agent in Docker      │   writes code · runs tests · ticks the box
-        │ (opencode | claude)  │   appends discovered work · opens PR · stops
+        │ agent in Docker      │   loads skills · writes code · runs tests
+        │ opencode|claude|codex│   appends discovered work · opens PR · stops
         └──────────┬───────────┘
         ┌──────────▼───────────┐
         │ GitHub               │   CI → auto-merge → release-please
         └──────────┬───────────┘
-                   │  loop waits for the merge, audits the plan delta,
-                   ▼  guards against plan bloat, repeats
+                   │  loop labels the PR, waits for the merge (red CI goes
+                   ▼  back to the agent), audits the plan delta, repeats
 ```
+
+## What the loop does for you
+
+- **Deterministic work stays in bash.** Item selection, the work branch, the
+  plan tick, the PR label, `Closes #N`, merge waiting, CI-log retrieval and
+  plan accounting never depend on the model remembering a step.
+- **It heals itself.** A red PR gets its failing CI log handed back to the
+  agent (`--ci-retries`); a session that produced nothing switches to the next
+  model (`--fallback-models`) — free endpoints churn.
+- **Sessions start oriented.** The knowledge graph's answer for the item is in
+  the prompt before the model reads a file; indented item details reach the
+  session as acceptance criteria; skills carry the playbooks.
+- **It learns.** Sessions record what they worked out about your project as
+  skills, so the next cold start does not rediscover it.
+- **Safety is layered and engine-independent.** Docker, deny rules, a scoped
+  token, branch protection — plus a git guard in every container that refuses
+  force pushes, pushes to `main` and pushes carrying a secret, and a
+  maintainers-only gate on text from GitHub issues and reviews.
+- **It fits GitHub work.** `--issue 42` turns an issue into a PR that closes it;
+  `--address-review 17` has the agent work through your review comments,
+  including on plan PRs.
+- **It is operable.** `--doctor` checks every precondition (models and free
+  quota included), `--stats` shows per-model results, `--notify` pings you,
+  `--stop` ends a run cleanly, `--max-cost` caps paid engines.
 
 ## Install into a project
 
@@ -135,7 +159,8 @@ install.sh          the installer (local and remote mode)
 template/           everything that lands in a target project
 docs/SETUP.md       full walkthrough: phases 0-8, troubleshooting, reference
 docs/ENGINES.md     the engine contract — what a third engine must satisfy
-tests/              installer test suite (runs in CI)
+tests/              installer tests + the end-to-end loop test (stubbed
+                    docker/gh/engine, real git) — both run in CI
 PLAN.md             this repo's own roadmap — agentloop develops itself
 version.txt         current version (managed by release-please)
 ```
@@ -145,8 +170,10 @@ Releases are cut by release-please from conventional commits; install with
 
 ## Roadmap
 
-See [PLAN.md](PLAN.md) — next up: stricter shellcheck in CI, which this repo
-will fix by running its own loop: `./install.sh . && ./run.sh`.
+See [PLAN.md](PLAN.md) — this repo develops itself with its own loop:
+`./install.sh . --update && ./run.sh`. Milestone 6 lists what comes next
+(default-branch detection, a local verify gate, watch mode, per-item engine
+routing, an optional review session).
 
 ## License
 

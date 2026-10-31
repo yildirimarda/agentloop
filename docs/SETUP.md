@@ -10,14 +10,16 @@ You write the plan once — or have the agent draft it — then run `./run.sh`.
                         ./run.sh -n 5
                              │
         ┌────────────────────▼─────────────────────┐
-        │  read PLAN.md, take first "- [ ]" item   │  ← bash, deterministic
+        │  take first "- [ ]" item + its details,  │  ← bash, deterministic
+        │  ask the knowledge graph where to start, │
+        │  create the work branch, tick the item   │
         └────────────────────┬─────────────────────┘
                              │
         ┌────────────────────▼─────────────────────┐
         │  AGENT (in container)                    │
-        │  query knowledge graph → write code      │
-        │  → test → fix → tick the box             │
+        │  load skills → write code → test → fix   │
         │  → append work it discovered             │
+        │  → record what it learned (skills)       │
         │  → push → open PR → stop                 │
         └────────────────────┬─────────────────────┘
                              │
@@ -27,8 +29,9 @@ You write the plan once — or have the agent draft it — then run `./run.sh`.
         └────────────────────┬─────────────────────┘
                              │
         ┌────────────────────▼─────────────────────┐
-        │  loop waits for merge, reports what the  │  ← bash
-        │  agent added, guards against plan bloat  │
+        │  loop labels the PR, waits for the merge │  ← bash
+        │  (red CI → failing log back to agent),   │
+        │  reports plan growth + new skills        │
         └────────────────────┬─────────────────────┘
                              │
                           repeat
@@ -1257,7 +1260,7 @@ $ security add-generic-password -s anthropic -a "$USER" -w 'sk-ant-...'
 ```
 
 3. Rebuild the image if you built it before this section existed
-   (`docker build -t agent -f Dockerfile.agent .`) and check:
+   (`./run.sh --build`) and check:
 
 ```
 $ docker run --rm agent claude --version
@@ -1293,7 +1296,7 @@ under the exact same loop. Setup is one keychain entry plus an image rebuild:
 
 ```
 $ security add-generic-password -s codex -a "$USER" -w '<openai-api-key>'
-$ docker build -t agent -f Dockerfile.agent .
+$ ./run.sh --build
 $ docker run --rm agent codex --version
 ```
 
@@ -1499,15 +1502,19 @@ git changes. `GIT_GUARD=0` in `.agentloop.local` turns it off.
 ## Division of responsibility
 
 ```
-BASH (run.sh)              AGENT (container)          GITHUB
-──────────────────         ──────────────────         ──────────────
-pick next item             query the graph            run CI
-refresh graph index        write code                 auto-merge if green
-verify commits exist       run tests, fix             tag via release-please
-verify PR opened           tick the checkbox
-verify checkbox moved      append discovered work
-measure plan growth        push + open PR
-wait for merge             stop
+BASH (run.sh)                AGENT (container)          GITHUB
+────────────────────         ──────────────────         ──────────────
+pick next item + details     load skills, query graph   run CI
+refresh graph, seed prompt   write code                 auto-merge if green
+create branch, tick item     run tests, fix             tag via release-please
+guard every git push         append discovered work
+label PR, link issue         record learned skills
+verify commits / PR          push + open PR
+wait for merge               stop
+feed CI logs back, retry
+switch models on failure
+measure plan growth
+record history, notify
 stop on failure
 ```
 
@@ -1539,7 +1546,7 @@ The defence has four layers:
    machine) before each request. Adds a moving part; measure first — enable
    it if the "session tokens" line in run summaries keeps growing past the
    model's context size, i.e. compaction is triggering anyway. Requires a
-   rebuilt image (`docker build -t agent -f Dockerfile.agent .`).
+   rebuilt image (`./run.sh --build`).
 
 Paid engines cache automatically — nothing to configure: Claude Code applies
 Anthropic prompt caching in headless `-p` mode by itself (cache reads are
@@ -1668,9 +1675,11 @@ If that fails, the token expired or lacks Pull requests: write. Regenerate it
 
 ### `WARNING: the item was not ticked off in PLAN.md`
 
-The agent did the work but skipped step 5 of `AGENTS.md`. Without the tick, the
-next iteration would redo the same item, so the loop refuses to continue. Tick it
-yourself:
+The loop ticks the item itself when it creates the work branch, so a merged PR
+without the tick means the agent reverted it (it decided it had not finished
+the item) or a `PLAN.md` merge conflict was resolved against the tick. Without
+the tick the next iteration would redo the item, so the loop refuses to
+continue. Read the PR; if the item is done, tick it yourself:
 
 ```
 $ git switch main && git pull
@@ -1678,23 +1687,28 @@ $ # edit PLAN.md, change the item's [ ] to [x]
 $ git commit -am "chore: tick completed plan item" && git push
 ```
 
-If it happens repeatedly, the model isn't following instructions reliably enough
-for this setup. Change it.
+### `STOPPING: CI is still failing on PR #N after K automatic fix attempt(s).`
 
-### `STOPPING: CI failed on PR #N.`
-
-Expected occasionally. Fix on the same branch so the existing PR updates:
+The loop already handed the failing log back to the agent `--ci-retries`
+times (default 1). Raise it for flaky-but-fixable stacks, or take over on the
+same branch so the existing PR updates:
 
 ```
-$ gh pr checks N                    # what failed
-$ gh run view --log-failed          # the actual error
 $ git switch $(gh pr view N --json headRefName -q .headRefName)
 $ ./run.sh --task "CI failed with: <paste the error>. Fix it."
-$ git push
 ```
 
-If the same class of failure keeps happening, your CI and `AGENTS.md` disagree
-about what "green" means. Make them identical.
+Or comment on the PR what is wrong and run `./run.sh --address-review N`.
+If the same class of failure keeps happening, your CI and `AGENTS.md`
+disagree about what "green" means. Make them identical.
+
+### `STOPPING: the agent labelled PR #N 'blocked'`
+
+The agent got stuck (or found the item wrong) and handed over — nothing
+auto-merges a `blocked` PR, so the loop stops at once instead of waiting out
+the merge timeout. Read the description: what it tried, what happened, what it
+needs. Then fix the item in `PLAN.md`, or reply with review comments and run
+`./run.sh --address-review N`.
 
 ### `STOPPING: PR #N did not merge.`
 
@@ -1707,7 +1721,9 @@ $ gh pr view N --json state,mergeStateStatus,labels
 - `BLOCKED` → a required check hasn't reported. Name mismatch: re-run
   `CHECK=<job-name> ./setup-github.sh`
 - `CLEAN` but not merged → auto-merge isn't on. See 4.3.
-- label `blocked` → the agent flagged it deliberately. Read the description.
+
+`./run.sh --doctor` checks labels, auto-merge settings and the token's access
+in one go.
 
 ### `STOPPING: the agent has added N items this run`
 
@@ -1722,8 +1738,23 @@ $ ./run.sh -n 5 --no-discover    # or turn discovery off for a while
 ### `error: image 'agent' not found`
 
 ```
-$ docker build -t agent -f Dockerfile.agent .
+$ ./run.sh --build
 ```
+
+### `⚠ image 'agent' was built from an older Dockerfile.agent`
+
+`Dockerfile.agent` changed since the image was built with `./run.sh --build`
+(an update brought a new tool, or you added one). The run continues, but
+anything new is missing until you rebuild: `./run.sh --build`.
+
+### `agentloop git guard: push refused — …`
+
+Printed to the agent, not to you: the in-container git guard blocked a force
+push, a push to `main`/`master`, or a push carrying one of the container's
+secrets. The agent is told how to recover (new commits instead of rewritten
+history; remove the secret from the unpushed commits). If a session ends
+without a PR because of it, read the log — a refused secret means a key
+nearly leaked, and the session transcript shows where it came from.
 
 ### `error: Docker is not running`
 
@@ -1766,10 +1797,17 @@ $ ./run.sh --init "<description>"
 ```bash
 ./run.sh                      # next item
 ./run.sh -n 5                 # next five
-./run.sh -n all               # until the plan is done
+./run.sh -n all --notify      # until the plan is done; notify at the end
 ./run.sh --next               # what's next (free, no API calls)
 ./run.sh --task "fix X"       # one-off, ignores PLAN.md
+./run.sh --issue 42           # one-off from a GitHub issue
+./run.sh --address-review 17  # work through review comments on PR #17
 ./run.sh --replan             # restructure the plan
+./run.sh --stop               # (other terminal) finish this item, then stop
+./run.sh --doctor             # can a run start?
+./run.sh --stats              # how are runs going, per model?
+./run.sh --skills             # what can sessions load?
+./run.sh --build              # rebuild the image after Dockerfile changes
 ./run.sh --reindex            # rebuild the graph
 ./run.sh --help               # all flags
 ```
@@ -1780,8 +1818,9 @@ $ ./run.sh --init "<description>"
 |---|---|
 | `PLAN.md` | Adding work, fixing order, pruning |
 | `AGENTS.md` → Project reference | Commands changed |
+| `.agents/skills/<name>/SKILL.md` | A procedure every session should know (not `agentloop-*`) |
 | `opencode.json` | Changing model or guardrails |
-| `Dockerfile.agent` | Agent needs a new tool |
+| `Dockerfile.agent` | Agent needs a new tool (then `./run.sh --build`) |
 | `.github/workflows/ci.yml` | CI changed |
 
 ### Files you don't touch
@@ -1791,6 +1830,7 @@ $ ./run.sh --init "<description>"
 | `run.sh` | The loop logic; changing it breaks the safety checks |
 | `setup-github.sh` | Run once, done |
 | `automerge.yml`, `release.yml` | Work as-is |
+| `.agents/skills/agentloop-*` | Replaced on every update — copy one under a new name to customise it |
 
 ### Health check in one command
 

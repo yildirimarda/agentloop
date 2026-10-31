@@ -71,6 +71,11 @@ unchecked, stop.
 - Lint:   `shellcheck -S warning install.sh tests/install-test.sh tests/loop-test.sh template/run.sh template/setup-github.sh`
 - Syntax: `bash -n install.sh tests/install-test.sh tests/loop-test.sh template/run.sh template/setup-github.sh`
 - JSON:   `python3 -c "import json;[json.load(open(f)) for f in ['template/opencode.json','template/.mcp.json','template/.claude/settings.json']]"`
-- Layout: `install.sh` (installer) · `template/` (the product) ·
-  `tests/` (installer tests) · `docs/SETUP.md` (user guide) ·
-  `version.txt` + `CHANGELOG.md` (release-please owns these — don't edit)
+- Layout: `install.sh` (installer) · `template/` (the product, including the
+  managed skills in `template/.agents/skills/`) · `tests/` (installer tests +
+  end-to-end loop test) · `docs/SETUP.md` (user guide) · `docs/ENGINES.md`
+  (engine contract) · `version.txt` + `CHANGELOG.md` (release-please owns
+  these — don't edit)
+- Testing run.sh: extend `tests/loop-test.sh` — its stubs (docker, gh,
+  security, the scripted engine, graphify) make every loop path testable on
+  Linux in seconds. `KEEP_TMP=1` keeps the scratch projects for inspection.
