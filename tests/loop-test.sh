@@ -746,9 +746,18 @@ last_prompt | grep "please rename foo to bar" >/dev/null || fail "review: review
 last_prompt | grep "src/app.py:12" >/dev/null || fail "review: inline comment missing"
 last_prompt | grep "NOTE: you are already on branch" >/dev/null || fail "review: not told to stay on the PR branch"
 expect_out "Feedback addressed on PR #1 — it is labelled 'blocked'"
+[[ "$(on_branch)" == "main" ]] || fail "review: checkout not returned to main"
 git --git-dir="$FAKE_REMOTE" log --format=%s "$(cat "$FAKE_STATE/gh/pr/1/branch")" | grep "fix: address review feedback" >/dev/null \
   || fail "review: fix not pushed to the PR branch"
 [[ "$(cat "$FAKE_STATE/gh/next_pr")" == 1 ]] || fail "review: a second PR was opened"
+
+# a session that changes nothing on an existing PR is a failure, not a success
+export FAKE_BAD_MODELS="default"
+run_sh --address-review 1
+[[ "$RC" == 1 ]] || fail "review session that changed nothing must fail (got $RC)"
+expect_out "no new commits on PR #1 — the agent changed nothing"
+[[ "$(on_branch)" == "main" ]] || fail "review no-op: not back on main"
+unset FAKE_BAD_MODELS
 
 new_project review-merge
 export FAKE_MERGE=never
