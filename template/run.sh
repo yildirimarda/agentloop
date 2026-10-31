@@ -26,6 +26,7 @@ SKILLSNAP=""
 SKILLS_ADDED=0
 
 MODEL=""
+FALLBACK_MODELS=""      # comma-separated; tried in order when a session yields nothing
 USE_GRAPH=1
 GRAPH_CONTEXT=1         # seed item prompts with a knowledge-graph excerpt
 GRAPH_BUDGET=1200       # token budget of that excerpt (graphify query --budget)
@@ -51,12 +52,13 @@ SKILLS_DIR=".agents/skills"
 #   GRAPH_CONTEXT=0          (don't seed prompts with a graph excerpt)
 #   GRAPH_BUDGET=1200        (token budget of that excerpt)
 #   GIT_GUARD=0              (disable the in-container push guard — not advised)
+#   FALLBACK_MODELS=a/b,c/d  (models to switch to when a session yields nothing)
 # Precedence: CLI flags > this file > committed defaults (opencode.json).
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -110,6 +112,11 @@ Options
   -m, --model ID            override the model from opencode.json
                             (OpenRouter: openrouter/vendor/model; NVIDIA NIM:
                             nvidia-nim/vendor/model, keychain entry "nvidia")
+      --fallback-models A,B when a session yields nothing (no commits, no PR:
+                            a model failing at tool calls, a dead free
+                            endpoint, a stall), redo the item with the next
+                            model and keep it for the rest of the run
+                            (persist: FALLBACK_MODELS=... in .agentloop.local)
       --no-graph            skip the Graphify index step (and graph context)
       --no-graph-context    don't seed item prompts with the knowledge graph's
                             answer for the item (persist: GRAPH_CONTEXT=0)
@@ -157,6 +164,7 @@ while (( $# )); do
     --ambitious)    AMBITIOUS=1; shift ;;
     --headroom)     HEADROOM=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
+    --fallback-models) FALLBACK_MODELS="${2:?--fallback-models needs a comma-separated list}"; shift 2 ;;
     --no-graph)     USE_GRAPH=0; shift ;;
     --no-graph-context) GRAPH_CONTEXT=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
@@ -788,6 +796,22 @@ run_agent() {
 # tick alone made every empty session look like "commits exist but no PR".
 BRANCH_BASE=""
 made_commits() { [[ -n "$(git log --oneline "${BRANCH_BASE:-origin/main}..HEAD" 2>/dev/null)" ]]; }
+
+# Model fallback: a session that yields nothing at all (no commits, no PR) is
+# usually the model, not the item — it cannot call tools, its free endpoint
+# vanished or is rate-limited, the API stalled. Switch to the next model in
+# FALLBACK_MODELS and redo the item. The switch is sticky for the rest of the
+# run: a model that just failed this way rarely recovers mid-run.
+FALLBACK_LEFT="$(printf '%s' "$FALLBACK_MODELS" | tr -d ' ')"
+use_fallback_model() {
+  local failed="${MODEL:-the default model}"
+  [[ -n "$FALLBACK_LEFT" ]] || return 1
+  MODEL="${FALLBACK_LEFT%%,*}"
+  if [[ "$FALLBACK_LEFT" == *,* ]]; then FALLBACK_LEFT="${FALLBACK_LEFT#*,}"; else FALLBACK_LEFT=""; fi
+  echo
+  echo "  $failed produced nothing (no commits, no PR) — switching to $MODEL for the rest of this run"
+  return 0
+}
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
 pr_labels()    { gh_c pr view "$1" --json labels -q '.labels[].name' 2>/dev/null || true; }
 
@@ -839,6 +863,11 @@ new_work_branch() {
   slug="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' \
           | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-40)"
   branch="${prefix}${slug:+/$slug}-$(date +%m%d%H%M%S)"
+  # A retry within the same second (model fallback) may meet a kept branch.
+  local n=1 base="$branch"
+  while git rev-parse -q --verify "refs/heads/$branch" >/dev/null 2>&1; do
+    n=$(( n + 1 )); branch="$base-$n"
+  done
   git switch -c "$branch" >/dev/null 2>&1 || die "could not create work branch $branch"
   WORK_BRANCH="$branch"
   BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -1446,22 +1475,31 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
     fi
     graph_sync
     graphctx="$(graph_context "$TASK_TEXT")"
-    if [[ "$cur_branch" == "main" || "$cur_branch" == "master" ]]; then
-      new_work_branch "task" "$TASK_TEXT"
-    fi
-    BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
     task_prompt="$ARG_TEXT"
     if [[ -n "$graphctx" ]]; then
       task_prompt="$ARG_TEXT
 
 $(graph_section "$graphctx")"
     fi
-    run_agent "$task_prompt"; rc=$?
-    pr="$(current_pr || true)"
+    on_main=0
+    [[ "$cur_branch" == "main" || "$cur_branch" == "master" ]] && on_main=1
+    while :; do
+      (( on_main )) && new_work_branch "task" "$TASK_TEXT"
+      BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
+      run_agent "$task_prompt"; rc=$?
+      pr="$(current_pr || true)"
+      if [[ -n "$pr" ]] || made_commits; then break; fi
+      # Fallback models only on a branch the loop created — never abandon
+      # a branch you were on when you started the task.
+      (( on_main )) || break
+      use_fallback_model || break
+      abandon_work_branch
+    done
     if [[ -z "$pr" ]] && ! made_commits; then
       echo "  no PR opened, no commits visible — the agent wrote nothing"
       abandon_work_branch
-      exit "$rc"
+      # engines exit 0 after doing nothing; a task that wrote nothing failed
+      exit $(( rc == 0 ? 1 : rc ))
     fi
     git log --oneline origin/main..HEAD 2>/dev/null | sed 's/^/  /'
     if [[ -n "$pr" ]]; then
@@ -1552,19 +1590,24 @@ for (( i = 1; i <= COUNT; i++ )); do
   graph_sync
   graphctx="$(graph_context "$item")"
   [[ -n "$graphctx" ]] && info "graph: prompt seeded with $(printf '%s\n' "$graphctx" | wc -l | tr -d ' ') lines of context"
-  new_work_branch "agent" "$item"
-  tick_item_on_branch "$item"
-  run_agent "$(prompt_item "$item" "$details" "$graphctx")"
-
-  # Verify against GitHub first: a PR for this branch = work definitely
-  # happened, whatever the local ref view claims.
-  pr="$(current_pr || true)"
+  while :; do
+    new_work_branch "agent" "$item"
+    tick_item_on_branch "$item"
+    run_agent "$(prompt_item "$item" "$details" "$graphctx")"
+    # Verify against GitHub first: a PR for this branch = work definitely
+    # happened, whatever the local ref view claims.
+    pr="$(current_pr || true)"
+    if [[ -n "$pr" ]] || made_commits; then break; fi
+    use_fallback_model || break
+    abandon_work_branch
+  done
   if [[ -z "$pr" ]]; then
     if ! made_commits; then
       echo
       echo "STOPPING: no PR was opened and no commits are visible. The model"
       echo "may be failing at tool calls — look at the tool list above. If"
-      echo "there are no 'bash' calls, change the model in opencode.json."
+      echo "there are no 'bash' calls, change the model in opencode.json, or"
+      echo "give the loop alternatives:  --fallback-models vendor/a,vendor/b"
       abandon_work_branch
       exit 1
     fi
