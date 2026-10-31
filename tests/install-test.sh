@@ -272,6 +272,21 @@ ls "$TMP"/cf/logs/*-cifail.txt >/dev/null 2>&1                      || fail "ci_
 unset -f gh_c sleep info
 cd "$TMP/proj"
 
+# require_secret: a missing keychain entry must stop the run in the MAIN shell
+# (a die inside "$(...)" only ends the subshell and the run went on with an
+# empty token), and a present one is assigned without a subshell.
+rs_out="$(
+  eval "$(sed -n '/^die()/p;/^secret_optional()/,/^}$/p;/^require_secret()/,/^}$/p' run.sh)"
+  security() { [[ "$3" == "present" ]] && echo "s3cret" || return 44; }
+  require_secret GOT present
+  echo "got=$GOT"
+  require_secret NOPE missing-entry 2>/dev/null
+  echo "SHOULD-NOT-REACH"
+)" && fail "require_secret: missing secret did not exit non-zero"
+echo "$rs_out" | grep -q "got=s3cret"        || fail "require_secret: present secret not assigned"
+echo "$rs_out" | grep -q "SHOULD-NOT-REACH"  && fail "require_secret: run continued after a missing secret"
+grep -q 'mktemp -t' run.sh && fail "run.sh uses BSD-only 'mktemp -t' (breaks on GNU/Linux)"
+
 python3 -c "
 import json
 d = json.load(open('opencode.json'))

@@ -127,7 +127,7 @@ while (( $# )); do
     -f|--file)      f="${2:?-f needs a path}"
                     [[ -f "$f" ]] || { echo "error: file not found: $f" >&2; exit 1; }
                     ARG_TEXT="$(cat "$f")"; shift 2 ;;
-    -e|--engine)    ENGINE="${2:?--engine needs opencode or claude}"; shift 2 ;;
+    -e|--engine)    ENGINE="${2:?--engine needs opencode, claude or codex}"; shift 2 ;;
     --no-discover)  DISCOVER=0; shift ;;
     --max-growth)   MAX_GROWTH="${2:?--max-growth needs a number}"; shift 2 ;;
     --no-wait)      WAIT=0; shift ;;
@@ -171,10 +171,19 @@ plan_next() {
     | sed -E 's/^[[:space:]]*- \[ \][[:space:]]*//'
 }
 
-keychain() {
-  security find-generic-password -s "$1" -w 2>/dev/null \
-    || die "keychain entry '$1' not found. Add it with:
-  security add-generic-password -s $1 -a \"\$USER\" -w '<secret>'"
+# Secrets come from the macOS keychain. secret_optional prints nothing when an
+# entry is missing; require_secret assigns into a variable IN THIS SHELL and
+# dies here — a `die` inside "$(...)" would only end the subshell and let the
+# run continue with an empty token.
+secret_optional() {
+  security find-generic-password -s "$1" -w 2>/dev/null || true
+}
+require_secret() {   # $1 = variable to set, $2 = keychain entry name
+  local _val
+  _val="$(secret_optional "$2")"
+  [[ -n "$_val" ]] || die "keychain entry '$2' not found. Add it with:
+  security add-generic-password -s $2 -a \"\$USER\" -w '<secret>'"
+  printf -v "$1" '%s' "$_val"
 }
 
 case "$ENGINE" in
@@ -266,27 +275,27 @@ NVIDIA_KEY=""
 if [[ "$MODE" == "ghsetup" ]]; then
   # One-time repo administration needs an admin-capable token, deliberately
   # separate from the agent's minimal token.
-  GH_RUN_TOKEN="$(keychain gh-admin)"
+  require_secret GH_RUN_TOKEN gh-admin
 else
-  GH_AGENT_TOKEN="$(keychain gh-agent)"
+  require_secret GH_AGENT_TOKEN gh-agent
   if [[ "$ENGINE" == "claude" ]]; then
-    ANTHROPIC_KEY="$(keychain anthropic)"
-    OPENROUTER_KEY="$(security find-generic-password -s openrouter -w 2>/dev/null || true)"
+    require_secret ANTHROPIC_KEY anthropic
+    OPENROUTER_KEY="$(secret_optional openrouter)"
   elif [[ "$ENGINE" == "codex" ]]; then
-    CODEX_KEY="$(keychain codex)"
-    OPENROUTER_KEY="$(security find-generic-password -s openrouter -w 2>/dev/null || true)"
+    require_secret CODEX_KEY codex
+    OPENROUTER_KEY="$(secret_optional openrouter)"
   else
     # NVIDIA NIM is optional; OpenRouter is required unless the chosen model is
     # an NVIDIA one. (A model set only in opencode.json is not visible here —
     # then put MODEL=nvidia-nim/... in .agentloop.local, or keep an openrouter
     # key around.)
-    NVIDIA_KEY="$(security find-generic-password -s nvidia -w 2>/dev/null || true)"
     case "${MODEL:-}" in
       nvidia*/*)
-        [[ -n "$NVIDIA_KEY" ]] || die "keychain entry 'nvidia' not found. Add it with:
-  security add-generic-password -s nvidia -a \"\$USER\" -w '<nvapi-...>'"
-        OPENROUTER_KEY="$(security find-generic-password -s openrouter -w 2>/dev/null || true)" ;;
-      *) OPENROUTER_KEY="$(keychain openrouter)" ;;
+        require_secret NVIDIA_KEY nvidia
+        OPENROUTER_KEY="$(secret_optional openrouter)" ;;
+      *)
+        NVIDIA_KEY="$(secret_optional nvidia)"
+        require_secret OPENROUTER_KEY openrouter ;;
     esac
   fi
 fi
@@ -450,7 +459,7 @@ run_agent() {
   echo
   AGENT_SEQ=$(( AGENT_SEQ + 1 ))
   CONTAINER_NAME="agentloop-$RUN_ID-$AGENT_SEQ"
-  wdflag="$(mktemp -t agentloop-wd)"; : > "$wdflag"
+  wdflag="$(mktemp "${TMPDIR:-/tmp}/agentloop-wd.XXXXXX")"; : > "$wdflag"
   : > "$log"
   if (( STALL_MIN > 0 )); then
     agent_watchdog "$CONTAINER_NAME" "$log" "$wdflag" &
@@ -1119,7 +1128,9 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
 esac
 
 # ── Plan loop ────────────────────────────────────────────────────────────────
-SNAP="$(mktemp -t planbefore)"
+# Portable template form: BSD mktemp accepts `-t prefix`, GNU mktemp rejects
+# it ("too few X's") — this spelling works on macOS and Linux alike.
+SNAP="$(mktemp "${TMPDIR:-/tmp}/agentloop-planbefore.XXXXXX")"
 
 completed_n=0
 total_added=0
