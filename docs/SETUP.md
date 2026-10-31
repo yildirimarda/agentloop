@@ -1026,6 +1026,22 @@ $ ./run.sh -n 5 -m openrouter/x/y     # try another model for one run
 $ ./run.sh -n 5 --timeout 40          # slow CI
 ```
 
+Long runs, unattended:
+
+```
+$ ./run.sh -n all --notify                     # banner (+ webhook) when it ends or stops
+$ ./run.sh --stop                              # from another terminal: finish this item, then stop
+$ ./run.sh -n all --engine claude --max-cost 5 # paid engine: end the run once $5 is reported
+```
+
+For a phone notification, put a webhook URL in the keychain — Slack and
+Discord incoming webhooks get their JSON format, anything else (an
+[ntfy.sh](https://ntfy.sh) topic URL, say) receives the message as plain text:
+
+```
+$ security add-generic-password -s agentloop-notify -a "$USER" -w 'https://ntfy.sh/<your-topic>'
+```
+
 ### 7.3 Expect to stop sometimes
 
 Stopping is the design working, not a bug. A loop that never stops is a loop that
@@ -1097,6 +1113,24 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `graphify_*` calls per run | several | zero — you're paying full token price |
 | `blocked` PRs | occasional | frequent — items are underspecified |
 
+Most of these come out of one command — `./run.sh --stats` reads
+`logs/history.tsv`, where the loop writes one row per item (engine, model,
+outcome, PR, CI-fix attempts, sessions, tokens, cost, duration, graph
+queries):
+
+```
+$ ./run.sh --stats
+per engine · model (plan items, tasks, issues and reviews):
+  engine · model                     items merged 1st-CI empty human   avg tok   cost $  avg m
+  opencode · openrouter/vendor/a        14     12     10     1     1     41200    0.000   11.3
+  opencode · openrouter/vendor/b         3      0      0     3     0      2100    0.000    0.8
+  claude · default                       4      4      4     0     0     88400    3.112    9.6
+```
+
+`empty` counts sessions that produced nothing — with `--fallback-models`,
+every failed attempt is a row under the model that failed, so a model that
+keeps going empty is easy to spot and drop.
+
 ---
 
 # Reference
@@ -1114,6 +1148,8 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `./run.sh --task "text"` | One-off task, ignores `PLAN.md` |
 | `./run.sh --next` | Dry run: print the next item. No API calls |
 | `./run.sh --skills` | List the skills sessions can load, flag malformed ones. No API calls |
+| `./run.sh --stats` | Per engine/model results from `logs/history.tsv`: merged, merged on first CI, empty sessions, tokens, cost. No API calls |
+| `./run.sh --stop` | From another terminal: the running loop ends cleanly after its current item |
 | `./run.sh --reindex` | Rebuild the Graphify graph from scratch |
 | `./run.sh --github-setup` | Branch protection + auto-merge + labels, from inside the container (`gh-admin` keychain token) |
 | `./run.sh --help` | All flags |
@@ -1126,6 +1162,8 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `--max-growth N` | 10 | Young project: raise it. Tight scope: lower it |
 | `--ci-retries N` | 1 | On a red PR, feed the failing CI log back to the agent on the same branch, up to N times (0 = off) |
 | `--auto-replan` | off | When the plan runs out mid-loop, run one replan session (plan PR for your review) instead of just stopping |
+| `--max-cost USD` | none | Paid engines: end the run (after the current item) once the engine-reported spend reaches this. Claude reports cost; OpenCode does on paid models; Codex doesn't (`MAX_COST=`) |
+| `--notify` | off | Long unattended runs: a macOS notification — and a webhook post if keychain entry `agentloop-notify` holds a Slack/Discord/ntfy URL — when the run finishes or stops, with the reason (`NOTIFY=1`) |
 | `--ambitious` | off | With `--replan`: adds a vision pass — the agent proposes 5-10 genuinely new product features under a "Proposed Features (vision)" milestone, for you to prune in the plan PR |
 | `--headroom` | off | (opencode engine) route the session through an in-container Headroom proxy that compresses old tool outputs before they reach the model. Persist with `HEADROOM=1` in `.agentloop.local` |
 | `--no-wait` | off | Rarely — `main` goes stale and items can repeat |
@@ -1140,7 +1178,7 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 `.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
 `ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`,
 `HEADROOM`, `STALL_MIN`, `LEARN`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
-`GIT_GUARD`, `FALLBACK_MODELS`.
+`GIT_GUARD`, `FALLBACK_MODELS`, `MAX_COST`, `NOTIFY`.
 Precedence: CLI flags > `.agentloop.local` > committed defaults
 (`opencode.json`). This is the intended way to switch models freely — the
 committed config stays the team/repo default; your experiments never require

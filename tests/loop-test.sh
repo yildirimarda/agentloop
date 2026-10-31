@@ -13,6 +13,8 @@
 # fast-forwards of its main, so PLAN.md accounting runs against real history.
 #
 # Bash 3.2 compatible (macOS): the stubs and this file avoid bash 4 features.
+# Under pipefail, `producer | grep -q` can fail at random (grep exits early,
+# the producer dies of SIGPIPE): pipelines here use `grep ... >/dev/null`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -95,6 +97,16 @@ STUB
 cat > "$STUBS/sleep" <<'STUB'
 #!/usr/bin/env bash
 exit 0
+STUB
+
+# Notification sinks: record what would have been shown / posted.
+cat > "$STUBS/osascript" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_STATE/osascript_calls"
+STUB
+cat > "$STUBS/curl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_STATE/curl_calls"
 STUB
 
 cat > "$STUBS/graphify" <<'STUB'
@@ -313,6 +325,8 @@ case "$prompt" in
     fi ;;
 esac
 git commit -qm "feat: work on $slug"
+tool "graphify query where does $slug go"
+[[ "${FAKE_STOP_DURING:-0}" == 1 ]] && : > logs/.stop-request   # someone runs ./run.sh --stop
 if [[ "${FAKE_NO_PR:-0}" == 1 ]]; then finish 900; exit 0; fi
 git push -q -u origin HEAD 2>/dev/null || { printf '{"type":"error","error":{"message":"push failed"}}\n'; exit 1; }
 if [[ -n "$label" ]]; then gh pr create --fill --label "$label" >/dev/null
@@ -354,8 +368,10 @@ PLAN
     printf '%s\n' "STALL_MIN=0" "TIMEOUT_MIN=1" > .agentloop.local
     git add -A && git commit -qm "chore: install agentloop" && git push -q -u origin main 2>/dev/null
   )
-  unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN
+  unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN FAKE_STOP_DURING
 }
+# outcome column of the last history row
+last_outcome() { tail -1 "$PROJ/logs/history.tsv" | cut -f5; }
 
 # run_sh ARGS... — run the project's run.sh; output in $OUT, status in $RC.
 RC=0
@@ -376,8 +392,8 @@ new_project happy
 run_sh -n 2
 [[ "$RC" == 0 ]] || fail "happy path exited $RC"
 expect_out "completed:     2 item(s)"
-remote_plan | grep -qx -- "- \[x\] Add the first feature"  || fail "first item not ticked on main"
-remote_plan | grep -qx -- "- \[x\] Add the second feature" || fail "second item not ticked on main"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null  || fail "first item not ticked on main"
+remote_plan | grep -x -- "- \[x\] Add the second feature" >/dev/null || fail "second item not ticked on main"
 [[ "$(on_branch)" == "main" ]] || fail "not back on main after the loop"
 [[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "merged work branches were not deleted"
 [[ -z "$(git -C "$PROJ" status --porcelain)" ]] || fail "loop left the tree dirty"
@@ -411,6 +427,7 @@ expect_out "STOPPING: the agent labelled PR #1 'blocked'"
 reject_out "waiting for PR #1 to merge" "blocked PR should not be waited on"
 [[ "$(on_branch)" == "main" ]] || fail "blocked PR: not back on main"
 [[ -n "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "blocked PR: work branch was not kept"
+[[ "$(last_outcome)" == "blocked" ]] || fail "blocked PR: history outcome is '$(last_outcome)'"
 
 # ── 4. A model that produces nothing → clean stop, branch removed ────────────
 new_project nothing
@@ -420,6 +437,7 @@ run_sh
 expect_out "STOPPING: no PR was opened and no commits are visible"
 [[ "$(on_branch)" == "main" ]] || fail "empty session: not back on main"
 [[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "empty session: branch not cleaned up"
+[[ "$(last_outcome)" == "no-pr" ]] || fail "empty session: history outcome is '$(last_outcome)'"
 
 # ── 5. Red CI → the failing log goes back to the agent → green → merged ──────
 new_project cifix
@@ -427,9 +445,9 @@ export FAKE_CI="red-once"
 run_sh --ci-retries 1
 [[ "$RC" == 0 ]] || fail "ci-fix: loop exited $RC"
 expect_out "automatic fix attempt 1/1"
-last_prompt | grep -q "assert 1 == 2" || fail "ci-fix: failing log not handed to the agent"
-last_prompt | grep -q "Load the skill agentloop-ci-fix" || fail "ci-fix: prompt does not load the ci-fix skill"
-remote_plan | grep -qx -- "- \[x\] Add the first feature" || fail "ci-fix: item not ticked after the fix merged"
+last_prompt | grep "assert 1 == 2" >/dev/null || fail "ci-fix: failing log not handed to the agent"
+last_prompt | grep "Load the skill agentloop-ci-fix" >/dev/null || fail "ci-fix: prompt does not load the ci-fix skill"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "ci-fix: item not ticked after the fix merged"
 
 # ── 6. Red CI with retries exhausted → stop, branch kept ─────────────────────
 new_project cired
@@ -438,6 +456,7 @@ run_sh --ci-retries 0
 [[ "$RC" == 1 ]] || fail "ci-red: expected exit 1, got $RC"
 expect_out "STOPPING: CI is still failing on PR #1"
 [[ "$(on_branch)" == "main" ]] || fail "ci-red: not back on main"
+[[ "$(last_outcome)" == "ci-failed" ]] || fail "ci-red: history outcome is '$(last_outcome)'"
 
 # ── 7. Discovery: items the agent appends are reported and counted ───────────
 new_project discover
@@ -482,7 +501,7 @@ run_sh --task "fix the typo in the README"
 [[ "$RC" == 0 ]] || fail "task mode exited $RC"
 expect_out "merged — back on main"
 [[ "$(on_branch)" == "main" ]] || fail "task mode: not back on main"
-git --git-dir="$FAKE_REMOTE" log --format=%s main | grep -q "feat: work on task-fix-the-typo" \
+git --git-dir="$FAKE_REMOTE" log --format=%s main | grep "feat: work on task-fix-the-typo" >/dev/null \
   || fail "task mode: work did not land on main"
 grep -q "Where to start" "$FAKE_STATE/prompt_1.txt" || fail "task mode: graph context missing from the prompt"
 
@@ -530,6 +549,9 @@ expect_out "completed:     2 item(s)"
 [[ "$(cat "$FAKE_STATE/engine_calls")" == "$(printf '%s\n' 'opencode default' 'opencode vendor/also-bad' 'opencode vendor/good' 'opencode vendor/good')" ]] \
   || fail "fallback: unexpected model sequence: $(tr '\n' ' ' < "$FAKE_STATE/engine_calls")"
 [[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "fallback: abandoned attempt branches left behind"
+# every failed attempt is a history row under the model that failed
+[[ "$(tail -n +2 "$PROJ/logs/history.tsv" | cut -f4,5 | tr '\t\n' ': ')" == "default:no-pr vendor/also-bad:no-pr vendor/good:merged vendor/good:merged " ]] \
+  || fail "fallback: unexpected history rows: $(tail -n +2 "$PROJ/logs/history.tsv" | cut -f4,5 | tr '\t\n' ': ')"
 
 new_project fallback-exhausted
 export FAKE_BAD_MODELS="default,vendor/bad"
@@ -547,5 +569,57 @@ new_project task-nothing
 export FAKE_BAD_MODELS="default"
 run_sh --task "tidy the README"
 [[ "$RC" == 1 ]] || fail "a task that wrote nothing must exit non-zero (got $RC)"
+
+# ── 16. History rows and --stats ─────────────────────────────────────────────
+new_project history
+run_sh -n 2
+[[ "$RC" == 0 ]] || fail "history: loop exited $RC"
+H="$PROJ/logs/history.tsv"
+head -1 "$H" | grep "^ts	mode	engine	model	outcome" >/dev/null || fail "history: missing header"
+[[ "$(tail -n +2 "$H" | wc -l | tr -d ' ')" == 2 ]] || fail "history: expected 2 rows"
+awk -F'\t' 'NR > 1 && !($2 == "item" && $5 == "merged" && $6 ~ /^[0-9]+$/ && $9 == 1500 && $10 == "0.0020" && $12 == 1) { bad = 1 } END { exit bad }' "$H" \
+  || fail "history: unexpected row content: $(tail -1 "$H")"
+expect_out "graph: 1 knowledge-graph query"
+run_sh --stats
+[[ "$RC" == 0 ]] || fail "--stats exited $RC"
+grep -E -q 'opencode · default +2 +2 +2 +0 +0' "$OUT" || fail "--stats: unexpected table: $(grep opencode "$OUT")"
+expect_out "last 5:"
+
+# ── 17. --stop: a stale request is ignored, a fresh one ends the run cleanly ─
+new_project stop
+run_sh --stop
+[[ -f "$PROJ/logs/.stop-request" ]] || fail "--stop did not leave a request"
+run_sh -n 2
+expect_out "completed:     2 item(s)"           # stale request cleared at start
+new_project stop-mid
+export FAKE_STOP_DURING=1
+run_sh -n 2
+[[ "$RC" == 0 ]] || fail "--stop mid-run: exited $RC"
+expect_out "stop requested (./run.sh --stop)"
+expect_out "completed:     1 item(s)"
+[[ ! -e "$PROJ/logs/.stop-request" ]] || fail "--stop: request not consumed"
+
+# ── 18. --max-cost ends the run once the engine-reported spend passes it ─────
+new_project budget
+run_sh -n 2 --engine claude --max-cost 0.2
+[[ "$RC" == 0 ]] || fail "budget: exited $RC"
+expect_out 'budget reached: $0.2500 of $0.2 spent'
+expect_out "completed:     1 item(s)"
+expect_out 'cost:          $0.2500 of $0.2 budget'
+
+# ── 19. --notify: banner + webhook on finish and on a stop ───────────────────
+new_project notify
+run_sh --notify
+[[ "$RC" == 0 ]] || fail "notify: exited $RC"
+grep -q 'display notification "1 item(s) done' "$FAKE_STATE/osascript_calls" || fail "notify: no finish banner"
+grep -q -- '-d 1 item(s) done' "$FAKE_STATE/curl_calls" || fail "notify: no webhook post"
+new_project notify-stop
+export FAKE_LABEL=blocked
+run_sh --notify
+grep -q 'stopped' "$FAKE_STATE/osascript_calls" && grep -q "needs you" "$FAKE_STATE/osascript_calls" \
+  || fail "notify: no stop banner with the reason"
+new_project notify-off
+run_sh
+[[ -e "$FAKE_STATE/osascript_calls" ]] && fail "notify: notified without --notify"
 
 echo "loop-test OK"

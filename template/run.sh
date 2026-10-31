@@ -37,6 +37,9 @@ AMBITIOUS=0
 HEADROOM=0
 LEARN=1                 # sessions may record project skills in .agents/skills/
 GIT_GUARD=1             # in-container `git push` guard (see write_git_guard)
+MAX_COST=""             # USD budget for one run (engines that report cost)
+NOTIFY=0                # notify (macOS banner / webhook) when a long run ends
+HISTORY="logs/history.tsv"
 ARG_TEXT=""
 ANTHROPIC_KEY=""
 SKILLS_DIR=".agents/skills"
@@ -53,12 +56,14 @@ SKILLS_DIR=".agents/skills"
 #   GRAPH_BUDGET=1200        (token budget of that excerpt)
 #   GIT_GUARD=0              (disable the in-container push guard — not advised)
 #   FALLBACK_MODELS=a/b,c/d  (models to switch to when a session yields nothing)
+#   MAX_COST=5               (stop a run once engines report $5 spent)
+#   NOTIFY=1                 (notify when a run stops or finishes)
 # Precedence: CLI flags > this file > committed defaults (opencode.json).
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS|MAX_COST|NOTIFY)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -78,6 +83,10 @@ Modes
       --next                dry run: print the next item. No API calls
       --skills              list the skills sessions can load (.agents/skills/)
                             and flag malformed ones. No API calls
+      --stats               per engine/model results from logs/history.tsv:
+                            merged, first-try CI, empty sessions, tokens, cost
+      --stop                ask the run in progress (another terminal) to stop
+                            cleanly after its current item
       --reindex             rebuild the Graphify knowledge graph from scratch
       --github-setup        run setup-github.sh inside the container using the
                             "gh-admin" keychain token (no host gh login needed)
@@ -98,6 +107,12 @@ Options
       --ci-retries N        when a PR's CI fails, automatically feed the
                             failing log back to the agent on the same branch
                             and let it fix, up to N times (default 1; 0 = off)
+      --max-cost USD        stop the run (after the current item) once the
+                            engines report this much spent — claude, and
+                            opencode on paid models; codex reports no cost
+      --notify              macOS notification (and the webhook in keychain
+                            entry "agentloop-notify", if set) when the run
+                            stops or finishes (persist: NOTIFY=1)
       --auto-replan         when the plan runs out mid-loop, run one replan
                             session so the agent proposes the next wave (as a
                             plan-labelled PR you review), then stop
@@ -147,6 +162,8 @@ while (( $# )); do
     --task)         MODE="task"; ARG_TEXT="${2:?--task needs text}"; shift 2 ;;
     --next)         MODE="next"; shift ;;
     --skills)       MODE="skills"; shift ;;
+    --stats)        MODE="stats"; shift ;;
+    --stop)         MODE="stop"; shift ;;
     --reindex)      MODE="reindex"; shift ;;
     --github-setup) MODE="ghsetup"; shift ;;
     -f|--file)      f="${2:?-f needs a path}"
@@ -161,6 +178,8 @@ while (( $# )); do
     --stall-timeout) STALL_MIN="${2:?--stall-timeout needs minutes}"; shift 2 ;;
     --ci-retries)   CI_RETRIES="${2:?--ci-retries needs a number}"; shift 2 ;;
     --auto-replan)  AUTO_REPLAN=1; shift ;;
+    --max-cost)     MAX_COST="${2:?--max-cost needs an amount in USD}"; shift 2 ;;
+    --notify)       NOTIFY=1; shift ;;
     --ambitious)    AMBITIOUS=1; shift ;;
     --headroom)     HEADROOM=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
@@ -260,6 +279,79 @@ skills_present() {
   printf '%s' "$out"
 }
 
+# ── Run accounting: logs/history.tsv, budget, notifications ─────────────────
+# One history row per unit of work (a plan item, a --task, an init/replan),
+# written when its outcome is known — or by the EXIT trap when the run stops
+# on it. Sessions add their tokens/cost/time to the open row.
+ITEM_OPEN=0 ITEM_MODE="" ITEM_TEXT="" ITEM_PR="" ITEM_OUTCOME=""
+ITEM_SESSIONS=0 ITEM_TOKENS=0 ITEM_COST=0 ITEM_GRAPH=0 ITEM_START=0
+RUN_COST=0 STOP_REASON="" DONE_NOTE=""
+add_cost() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { printf "%.4f", a + b }'; }
+
+item_begin() {   # $1 = mode (item|task|init|replan|issue|review), $2 = text
+  ITEM_OPEN=1; ITEM_MODE="$1"; ITEM_TEXT="$2"; ITEM_PR=""; ITEM_OUTCOME="interrupted"
+  ITEM_SESSIONS=0; ITEM_TOKENS=0; ITEM_COST=0; ITEM_GRAPH=0; ITEM_START="$(date +%s)"
+}
+
+item_end() {     # $1 = outcome: merged|opened|plan-pr|no-pr|no-pr-commits|blocked|ci-failed|not-merged|interrupted
+  (( ITEM_OPEN )) || return 0
+  ITEM_OPEN=0
+  local text
+  text="$(printf '%s' "$ITEM_TEXT" | tr '\t\n' '  ' | cut -c1-140)"
+  mkdir -p "$(dirname "$HISTORY")" 2>/dev/null || true
+  if [[ ! -s "$HISTORY" ]]; then
+    printf 'ts\tmode\tengine\tmodel\toutcome\tpr\tfixes\tsessions\ttokens\tcost\tsecs\tgraph\titem\n' > "$HISTORY"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ITEM_MODE" "$ENGINE" "${MODEL:-default}" "$1" \
+    "${ITEM_PR:--}" "${AWAIT_FIXES:-0}" "$ITEM_SESSIONS" "$ITEM_TOKENS" "$ITEM_COST" \
+    "$(( $(date +%s) - ITEM_START ))" "$ITEM_GRAPH" "$text" >> "$HISTORY" 2>/dev/null || true
+}
+
+# Notifications: a macOS banner (osascript) and/or a webhook from the keychain
+# entry "agentloop-notify" — Slack and Discord webhooks get their JSON shape,
+# anything else (ntfy.sh, a generic receiver) a plain-text POST. Best effort:
+# a failing notification never affects the run.
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/ }"
+  printf '%s' "$s"
+}
+notify() {   # $1 = title, $2 = message
+  local title="$1" msg="$2" url
+  (( NOTIFY )) || return 0
+  if command -v osascript >/dev/null 2>&1; then
+    osascript -e "display notification \"$(json_escape "$msg")\" with title \"$(json_escape "$title")\"" \
+      >/dev/null 2>&1 || true
+  fi
+  url="$(secret_optional agentloop-notify)"
+  [[ -n "$url" ]] && command -v curl >/dev/null 2>&1 || return 0
+  case "$url" in
+    *hooks.slack.com/*)
+      curl -fsS -m 10 -H 'Content-Type: application/json' \
+        -d "{\"text\":\"$(json_escape "$title — $msg")\"}" "$url" ;;
+    *discord.com/api/webhooks/*|*discordapp.com/api/webhooks/*)
+      curl -fsS -m 10 -H 'Content-Type: application/json' \
+        -d "{\"content\":\"$(json_escape "$title — $msg")\"}" "$url" ;;
+    *)
+      curl -fsS -m 10 -H "Title: $title" -d "$msg" "$url" ;;
+  esac >/dev/null 2>&1 || true
+}
+
+# Called from the EXIT trap: close the open history row, then tell the user
+# why a long-running mode ended (never for quick modes, never on Ctrl+C).
+notify_exit() {
+  local rc="$1" project
+  case "$MODE" in plan|task|init|replan|issue|review) : ;; *) return 0 ;; esac
+  (( rc == 130 )) && return 0
+  project="$(basename "$REPO_DIR")"
+  if (( rc == 0 )); then
+    notify "agentloop: $project" "${DONE_NOTE:-finished}"
+  else
+    notify "agentloop: $project stopped" "${STOP_REASON:-exit code $rc} — the terminal has details"
+  fi
+}
+
 # Secrets come from the macOS keychain. secret_optional prints nothing when an
 # entry is missing; require_secret assigns into a variable IN THIS SHELL and
 # dies here — a `die` inside "$(...)" would only end the subshell and let the
@@ -330,6 +422,49 @@ if [[ "$MODE" == "skills" ]]; then
     echo "$_bad skill(s) have problems — engines may skip them. Format: skill agentloop-skill-authoring."
     exit 1
   fi
+  exit 0
+fi
+
+# ── Graceful stop request ────────────────────────────────────────────────────
+# Ctrl+C kills the session mid-work. --stop (from another terminal) instead
+# leaves a request the running loop picks up between items; every run clears
+# stale requests when it starts, so this never affects a later run.
+STOP_FILE="logs/.stop-request"
+if [[ "$MODE" == "stop" ]]; then
+  mkdir -p logs && : > "$STOP_FILE"
+  echo "stop requested: the run in this checkout ends after its current item"
+  echo "(nothing running? the request is cleared when the next run starts)"
+  exit 0
+fi
+
+# ── Stats from logs/history.tsv ──────────────────────────────────────────────
+if [[ "$MODE" == "stats" ]]; then
+  if [[ ! -s "$HISTORY" ]]; then
+    echo "no history yet — $HISTORY fills in as the loop works (one row per item)"
+    exit 0
+  fi
+  echo "per engine · model (plan items, tasks, issues and reviews):"
+  printf '  %-44s %5s %6s %6s %5s %5s %9s %8s %6s\n' \
+    "engine · model" "items" "merged" "1st-CI" "empty" "human" "avg tok" "cost $" "avg m"
+  awk -F'\t' '
+    NR == 1 || $2 == "init" || $2 == "replan" { next }
+    {
+      k = $3 " · " $4; n[k]++
+      if ($5 == "merged") { m[k]++; if ($7 == 0) f[k]++ }
+      if ($5 == "no-pr" || $5 == "no-pr-commits") e[k]++
+      if ($5 == "blocked" || $5 == "ci-failed" || $5 == "not-merged") h[k]++
+      t[k] += $9; c[k] += $10; s[k] += $11
+    }
+    END {
+      for (k in n)
+        printf "  %-44s %5d %6d %6d %5d %5d %9d %8.3f %6.1f\n", substr(k, 1, 44), n[k], m[k], f[k], e[k], h[k], t[k] / n[k], c[k], s[k] / n[k] / 60
+    }' "$HISTORY" | sort
+  echo
+  echo "  merged = landed on main · 1st-CI = merged without a CI-fix session"
+  echo "  empty = session produced nothing · human = blocked, CI still red, or never merged"
+  echo
+  echo "last 5:"
+  tail -n +2 "$HISTORY" | tail -5 | awk -F'\t' '{ printf "  %s  %-7s %-13s %-6s %s\n", substr($1, 1, 16), $2, $5, ($6 == "-" ? "" : "#" $6), substr($13, 1, 60) }'
   exit 0
 fi
 
@@ -706,7 +841,7 @@ stop_watchdog() {
 }
 
 run_agent() {
-  local prompt="$1" log wdflag
+  local prompt="$1" log wdflag metrics="" s_tokens=0 s_cost=0 s_graph=0
   log="logs/$(date +%Y%m%d-%H%M%S)-$ENGINE.jsonl"
   info "engine: $ENGINE"
   info "log: $log (full transcript; terminal shows tool calls only)"
@@ -783,7 +918,36 @@ run_agent() {
             | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
     jq -r 'select(.type=="result") | .total_cost_usd? // empty
            | "  session cost: $" + (.|tostring)' "$log" 2>/dev/null | tail -1 || true
+    # Session metrics for history/budget: tokens (all engines), cost (claude's
+    # reported total; opencode's per-step cost, 0 on free models), and how
+    # often the knowledge graph was asked (MCP tools or the graphify CLI).
+    metrics="$(jq -rs '
+      ( [ .[] | select(.type=="step_finish") | .part.tokens.total // 0 ]
+        + [ .[] | select(.type=="turn.completed") | (.usage.input_tokens // 0) + (.usage.output_tokens // 0) ]
+        + [ .[] | select(.type=="result") | (.usage.input_tokens // 0) + (.usage.output_tokens // 0) ]
+        | add // 0 ) as $tok
+      | ( ([ .[] | select(.type=="step_finish") | .part.cost // 0 ] | add // 0)
+        + ([ .[] | select(.type=="result") | .total_cost_usd // empty ] | last // 0) ) as $cost
+      | ( [ .[] | ( select(.type=="tool_use") | (.part.tool // "") + " " + ((.part.state.input.command // "") | tostring) ),
+                  ( select(.type=="assistant") | .message.content[]? | select(.type=="tool_use")
+                    | (.name // "") + " " + ((.input.command // "") | tostring) ),
+                  ( select(.type=="item.started") | (.item.command // "") | tostring ) ]
+          | map(select(test("graphify"))) | length ) as $graph
+      | "\($tok) \($cost) \($graph)"' "$log" 2>/dev/null || true)"
+    read -r s_tokens s_cost s_graph <<< "${metrics:-0 0 0}"
+    [[ "${s_tokens:-}" =~ ^[0-9]+$ ]] || s_tokens=0
+    [[ "${s_graph:-}" =~ ^[0-9]+$ ]] || s_graph=0
+    [[ "${s_cost:-}" =~ ^[0-9.eE+-]+$ ]] || s_cost=0
+    if [[ "$ENGINE" == "opencode" ]] && awk -v c="$s_cost" 'BEGIN { exit !(c > 0) }'; then
+      echo "  session cost: \$$(add_cost "$s_cost" 0)"
+    fi
+    echo "  graph: $s_graph knowledge-graph quer$( (( s_graph == 1 )) && echo y || echo ies)"
   fi
+  ITEM_SESSIONS=$(( ITEM_SESSIONS + 1 ))
+  ITEM_TOKENS=$(( ITEM_TOKENS + s_tokens ))
+  ITEM_GRAPH=$(( ITEM_GRAPH + s_graph ))
+  ITEM_COST="$(add_cost "$ITEM_COST" "$s_cost")"
+  RUN_COST="$(add_cost "$RUN_COST" "$s_cost")"
   return "$rc"
 }
 
@@ -806,6 +970,9 @@ FALLBACK_LEFT="$(printf '%s' "$FALLBACK_MODELS" | tr -d ' ')"
 use_fallback_model() {
   local failed="${MODEL:-the default model}"
   [[ -n "$FALLBACK_LEFT" ]] || return 1
+  # Close the failed attempt's history row under the model that failed, so
+  # --stats shows which models produce empty sessions.
+  if (( ITEM_OPEN )); then item_end no-pr; item_begin "$ITEM_MODE" "$ITEM_TEXT"; fi
   MODEL="${FALLBACK_LEFT%%,*}"
   if [[ "$FALLBACK_LEFT" == *,* ]]; then FALLBACK_LEFT="${FALLBACK_LEFT#*,}"; else FALLBACK_LEFT=""; fi
   echo
@@ -949,10 +1116,13 @@ on_interrupt() {
   exit 130
 }
 cleanup_exit() {
+  local rc=$?
   stop_watchdog
   kill_run_containers
   [[ -n "$SNAP" ]] && rm -f "$SNAP"
   [[ -n "$SKILLSNAP" ]] && rm -f "$SKILLSNAP"
+  item_end "$ITEM_OUTCOME"
+  notify_exit "$rc"
   return 0
 }
 
@@ -1405,6 +1575,7 @@ EOF
 # runs out mid-loop. Opens a plan-labelled PR (never auto-merged) and stops.
 do_replan() {
   rule; echo "MODE: replan — auditing PLAN.md against the code"; rule
+  item_begin replan "$( (( AMBITIOUS )) && echo 'replan --ambitious' || echo replan)"
   graph_sync
   new_work_branch "chore/replan" ""
   run_agent "$(prompt_replan)"
@@ -1415,8 +1586,11 @@ do_replan() {
     echo
     echo "Plan PR #$rp opened: ${rp_url:-see it on GitHub}"
     echo "Review and merge it yourself — plan PRs never auto-merge."
+    ITEM_PR="$rp"; item_end plan-pr
+    DONE_NOTE="plan PR #$rp is waiting for your review"
   else
     made_commits || abandon_work_branch
+    item_end no-pr
   fi
   return "$rc"
 }
@@ -1437,11 +1611,17 @@ case "$MODE" in
   init)
     [[ -n "$ARG_TEXT" ]] || die "--init needs a description (text or -f file)"
     rule; echo "MODE: init — drafting PLAN.md"; rule
+    item_begin init "$ARG_TEXT"
     graph_sync
     new_work_branch "chore/plan-draft" ""
     run_agent "$(prompt_init)"; rc=$?
     pr="$(current_pr || true)"
     [[ -n "$pr" ]] || made_commits || abandon_work_branch
+    if [[ -n "$pr" ]]; then
+      ITEM_PR="$pr"; item_end plan-pr; DONE_NOTE="plan PR #$pr is waiting for your review"
+    else
+      item_end no-pr; STOP_REASON="--init opened no plan PR"
+    fi
     echo
     if [[ -n "$pr" ]] || made_commits; then
       pr_url="$(gh_c pr view "${pr:-}" --json url -q .url 2>/dev/null || true)"
@@ -1483,6 +1663,7 @@ $(graph_section "$graphctx")"
     fi
     on_main=0
     [[ "$cur_branch" == "main" || "$cur_branch" == "master" ]] && on_main=1
+    item_begin task "$TASK_TEXT"
     while :; do
       (( on_main )) && new_work_branch "task" "$TASK_TEXT"
       BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -1498,38 +1679,51 @@ $(graph_section "$graphctx")"
     if [[ -z "$pr" ]] && ! made_commits; then
       echo "  no PR opened, no commits visible — the agent wrote nothing"
       abandon_work_branch
+      ITEM_OUTCOME="no-pr"; STOP_REASON="the task produced no commits and no PR"
       # engines exit 0 after doing nothing; a task that wrote nothing failed
       exit $(( rc == 0 ? 1 : rc ))
     fi
     git log --oneline origin/main..HEAD 2>/dev/null | sed 's/^/  /'
-    if [[ -n "$pr" ]]; then
-      info "PR #$pr opened"
-      if ! ensure_automerge_label "$pr"; then
-        if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
-        info "PR #$pr is labelled '$PR_FLAG' — it needs a human"
-      fi
-      if (( WAIT )); then
-        await_merge_and_autofix "$pr" "$ARG_TEXT"
-        case "$AWAIT_RC" in
-          0) head_branch="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
-             git switch main --quiet 2>/dev/null || true
-             git_pull_c
-             [[ -n "$head_branch" ]] && git branch -D "$head_branch" >/dev/null 2>&1 || true
-             info "merged — back on main" ;;
-          3) echo
-             echo "CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
-             fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
-             keep_branch_and_return "CI failing" "$pr"
-             echo "  Take over:  git switch ${fb:-<branch>}  &&  ./run.sh --task \"<what to fix>\"" ;;
-          *) pu="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
-             echo "PR #$pr did not merge yet: ${pu:-open it on GitHub}"
-             keep_branch_and_return "PR did not merge" "$pr" ;;
-        esac
-      else
-        info "--no-wait: not waiting for the merge (automerge lands it when CI is green)"
-      fi
+    if [[ -z "$pr" ]]; then
+      ITEM_OUTCOME="no-pr-commits"; STOP_REASON="the task committed but opened no PR"
+      keep_branch_and_return "no PR was opened"
+      exit 1
     fi
-    exit "$rc" ;;
+    info "PR #$pr opened"
+    ITEM_PR="$pr"
+    if ! ensure_automerge_label "$pr"; then
+      ITEM_OUTCOME="blocked"; STOP_REASON="PR #$pr is labelled '$PR_FLAG' — it needs you"
+      if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
+      info "PR #$pr is labelled '$PR_FLAG' — it needs a human"
+    fi
+    if (( ! WAIT )); then
+      info "--no-wait: not waiting for the merge (automerge lands it when CI is green)"
+      item_end opened
+      exit 0
+    fi
+    await_merge_and_autofix "$pr" "$TASK_TEXT"
+    case "$AWAIT_RC" in
+      0) head_branch="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+         git switch main --quiet 2>/dev/null || true
+         git_pull_c
+         [[ -n "$head_branch" ]] && git branch -D "$head_branch" >/dev/null 2>&1 || true
+         info "merged — back on main"
+         item_end merged
+         DONE_NOTE="task merged (PR #$pr)"
+         exit 0 ;;
+      3) echo
+         echo "CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
+         fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || true)"
+         keep_branch_and_return "CI failing" "$pr"
+         echo "  Take over:  git switch ${fb:-<branch>}  &&  ./run.sh --task \"<what to fix>\""
+         ITEM_OUTCOME="ci-failed"; STOP_REASON="CI is still failing on PR #$pr"
+         exit 1 ;;
+      *) pu="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
+         echo "PR #$pr did not merge yet: ${pu:-open it on GitHub}"
+         keep_branch_and_return "PR did not merge" "$pr"
+         ITEM_OUTCOME="not-merged"; STOP_REASON="PR #$pr did not merge"
+         exit 1 ;;
+    esac ;;
 esac
 
 # ── Plan loop ────────────────────────────────────────────────────────────────
@@ -1540,8 +1734,27 @@ SKILLSNAP="$(mktemp "${TMPDIR:-/tmp}/agentloop-skillsbefore.XXXXXX")"
 
 completed_n=0
 total_added=0
+rm -f "$STOP_FILE"   # a request left from an earlier run must not stop this one
+if [[ -n "$MAX_COST" && "$ENGINE" == "codex" ]]; then
+  info "note: codex reports tokens but no cost — --max-cost cannot be enforced"
+fi
+budget_reached() {
+  [[ -n "$MAX_COST" ]] && awk -v a="$RUN_COST" -v b="$MAX_COST" 'BEGIN { exit !(a + 0 >= b + 0) }'
+}
 
 for (( i = 1; i <= COUNT; i++ )); do
+  # Between items: honour ./run.sh --stop and the --max-cost budget.
+  if (( i > 1 )); then
+    if [[ -f "$STOP_FILE" ]]; then
+      rm -f "$STOP_FILE"
+      echo; echo "stop requested (./run.sh --stop) — ending the run after the item above."
+      break
+    fi
+    if budget_reached; then
+      echo; echo "budget reached: \$$RUN_COST of \$$MAX_COST spent (--max-cost) — ending the run here."
+      break
+    fi
+  fi
   git switch main --quiet 2>/dev/null || true
   git_pull_c
 
@@ -1587,6 +1800,7 @@ for (( i = 1; i <= COUNT; i++ )); do
   [[ -n "$details" ]] && printf '%s\n' "$details" | sed 's/^/  /'
   rule
 
+  item_begin item "$item"
   graph_sync
   graphctx="$(graph_context "$item")"
   [[ -n "$graphctx" ]] && info "graph: prompt seeded with $(printf '%s\n' "$graphctx" | wc -l | tr -d ' ') lines of context"
@@ -1609,16 +1823,20 @@ for (( i = 1; i <= COUNT; i++ )); do
       echo "there are no 'bash' calls, change the model in opencode.json, or"
       echo "give the loop alternatives:  --fallback-models vendor/a,vendor/b"
       abandon_work_branch
+      ITEM_OUTCOME="no-pr"; STOP_REASON="a session produced no commits and no PR ('$item')"
       exit 1
     fi
     echo
     echo "STOPPING: commits exist but no pull request was opened."
     keep_branch_and_return "no PR was opened"
     echo "  To retry: push the branch and open the PR yourself, or delete it and re-run."
+    ITEM_OUTCOME="no-pr-commits"; STOP_REASON="commits but no pull request ('$item')"
     exit 1
   fi
   info "PR #$pr opened"
+  ITEM_PR="$pr"
   if ! ensure_automerge_label "$pr"; then
+    ITEM_OUTCOME="blocked"; STOP_REASON="PR #$pr is labelled '$PR_FLAG' — it needs you"
     if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
     info "PR #$pr is labelled '$PR_FLAG' — it needs a human (continuing: --no-wait)"
   fi
@@ -1626,12 +1844,13 @@ for (( i = 1; i <= COUNT; i++ )); do
   if (( ! WAIT )); then
     info "--no-wait: continuing without waiting for the merge"
     info "note: PLAN.md on main is stale, so the next item may repeat"
+    item_end opened
     continue
   fi
 
   await_merge_and_autofix "$pr" "$item"
   case "$AWAIT_RC" in
-    0) : ;;
+    0) item_end merged ;;
     3) fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || echo '<branch>')"
        echo
        echo "STOPPING: CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
@@ -1639,11 +1858,13 @@ for (( i = 1; i <= COUNT; i++ )); do
        echo "  Take over on the same branch:"
        echo "    git switch $fb"
        echo "    ./run.sh --task \"<what to fix>\""
+       ITEM_OUTCOME="ci-failed"; STOP_REASON="CI is still failing on PR #$pr"
        exit 1 ;;
     *) pu="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
        echo
        echo "STOPPING: PR #$pr did not merge. Take a look: ${pu:-open it on GitHub}"
        keep_branch_and_return "PR did not merge" "$pr"
+       ITEM_OUTCOME="not-merged"; STOP_REASON="PR #$pr did not merge"
        exit 1 ;;
   esac
 
@@ -1655,6 +1876,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     echo "WARNING: could not pull main after the merge (network?). Skipping the"
     echo "plan accounting rather than reading a stale PLAN.md — the merge itself"
     echo "succeeded. Run 'git pull' and start the loop again."
+    STOP_REASON="could not pull main after PR #$pr merged"
     exit 1
   fi
   # Remote branch is deleted by delete-branch-on-merge; tidy the local copy too.
@@ -1673,6 +1895,7 @@ for (( i = 1; i <= COUNT; i++ )); do
       echo "stale branch. The code for these is already on main; restore the"
       echo "ticks (edit PLAN.md on main, commit, push) before continuing:"
       printf '%s\n' "$reverted" | sed 's/^/    /'
+      STOP_REASON="PR #$pr reverted ticks of earlier items in PLAN.md"
       exit 1
     fi
   fi
@@ -1687,6 +1910,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     echo "WARNING: the item was not ticked off in PLAN.md, so the next"
     echo "iteration would pick it up again. Tick it yourself, or stop and"
     echo "check whether the model is following AGENTS.md."
+    STOP_REASON="the item of PR #$pr was not ticked off in PLAN.md"
     exit 1
   fi
 
@@ -1705,6 +1929,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     echo "padding. Prune it with:"
     echo "  ./run.sh --replan"
     echo "or run with --no-discover to stop it adding anything."
+    STOP_REASON="the plan grew by $total_added items (over --max-growth $MAX_GROWTH)"
     exit 1
   fi
 done
@@ -1718,6 +1943,10 @@ echo "completed:     $completed_n item(s)"
 echo "added to plan: $total_added item(s)"
 if (( SKILLS_ADDED > 0 )); then echo "skills:        $SKILLS_ADDED recorded (./run.sh --skills to review)"; fi
 echo "plan:          $(plan_done_count) done, $(plan_remaining) remaining"
+if awk -v c="$RUN_COST" 'BEGIN { exit !(c > 0) }'; then
+  echo "cost:          \$$RUN_COST${MAX_COST:+ of \$$MAX_COST budget} (as reported by the engine)"
+fi
+DONE_NOTE="$completed_n item(s) done — plan: $(plan_done_count) done, $(plan_remaining) remaining"
 n="$(plan_next || true)"
 # An if, not `[[ ]] && echo`: as the script's last command, a false test
 # made a fully successful run that finished the plan exit with status 1.
