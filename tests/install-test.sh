@@ -287,6 +287,32 @@ echo "$rs_out" | grep -q "got=s3cret"        || fail "require_secret: present se
 echo "$rs_out" | grep -q "SHOULD-NOT-REACH"  && fail "require_secret: run continued after a missing secret"
 grep -q 'mktemp -t' run.sh && fail "run.sh uses BSD-only 'mktemp -t' (breaks on GNU/Linux)"
 
+# ensure_automerge_label: bash (not the model) guarantees the "automated"
+# label, and a PR the agent flagged for a human is reported instead of waited on.
+(
+  eval "$(sed -n '/^info()/p;/^pr_labels()/p;/^ensure_automerge_label()/,/^}$/p' run.sh)"
+  PR_FLAG=""
+  EDITS="$TMP/label-edits"; : > "$EDITS"
+  gh_c() {
+    case "$*" in
+      "pr view "*"--json labels"*) printf '%s\n' $FAKE_LABELS ;;
+      "pr edit "*) echo "$*" >> "$EDITS" ;;
+    esac
+  }
+  FAKE_LABELS="" ensure_automerge_label 5 >/dev/null || fail "label: unlabelled PR reported as flagged"
+  grep -q "pr edit 5 --add-label automated" "$EDITS" || fail "label: 'automated' not added to an unlabelled PR"
+  : > "$EDITS"
+  FAKE_LABELS="automated" ensure_automerge_label 6 >/dev/null || fail "label: automated PR reported as flagged"
+  [[ -s "$EDITS" ]] && fail "label: relabelled a PR that already had 'automated'"
+  FAKE_LABELS="automated blocked" ensure_automerge_label 7 >/dev/null && fail "label: blocked PR not reported"
+  [[ "$PR_FLAG" == "blocked" ]] || fail "label: PR_FLAG not set to blocked"
+  FAKE_LABELS="plan" ensure_automerge_label 8 >/dev/null && fail "label: plan-labelled item PR not reported"
+  exit 0
+) || exit 1
+grep -q 'PROT_RC=\$?' setup-github.sh || fail "setup-github.sh lost the branch-protection status capture"
+awk '/PROT_RC=\$\?/{found=NR} /gh api -X PUT/{api=NR} END{exit !(found>api && found-api<25)}' setup-github.sh \
+  || fail "setup-github.sh: PROT_RC must be captured right after the protection API call"
+
 python3 -c "
 import json
 d = json.load(open('opencode.json'))
