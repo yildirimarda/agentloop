@@ -182,6 +182,23 @@ plan_next() {
     | sed -E 's/^[[:space:]]*- \[ \][[:space:]]*//'
 }
 
+# Details of the next item: the run of indented lines directly under it
+# (constraints, edge cases, acceptance criteria), ending at the first blank,
+# unindented or checkbox line — a nested "- [ ]" stays a separate item. One
+# indent level (two spaces or a tab) is removed; deeper nesting is kept.
+# Must be read BEFORE tick_item_on_branch, which turns that "- [ ]" into
+# "- [x]" on the work branch.
+plan_details() {
+  [[ -f "$PLAN" ]] || return 0
+  awk '
+    !found && /^[[:space:]]*- \[ \]/ { found = 1; next }
+    found {
+      if ($0 ~ /^[[:space:]]*$/ || $0 !~ /^(  |\t)/ || $0 ~ /^[[:space:]]*- \[[ xX]\]/) exit
+      sub(/^(  |\t)/, "")
+      print
+    }' "$PLAN" 2>/dev/null
+}
+
 # ── Skills (.agents/skills/<name>/SKILL.md — the portable location) ──────────
 # One value from a SKILL.md frontmatter (single-line fields only; quotes are
 # stripped). Prints nothing when the field or the frontmatter is missing.
@@ -253,6 +270,7 @@ if [[ "$MODE" == "next" ]]; then
   echo "done:      $(plan_done_count)"
   echo "remaining: $(plan_remaining)"
   echo "next:      ${n:-<nothing left>}"
+  plan_details | sed 's/^/           /'
   if [[ "$(plan_done_count)" -eq 0 && "$(plan_remaining)" -eq 0 ]]; then
     echo
     echo "note: no '- [ ]' items found. If PLAN.md uses another format"
@@ -1111,6 +1129,9 @@ Your job in this session is ONLY to produce the plan. Do not implement features.
    - Order items so each one only depends on items above it.
    - Write items as instructions, not topics: "Add config loading from
      environment variables with validation", not "Config".
+   - An item may carry details: lines indented by two spaces right under it
+     (constraints, edge cases, acceptance criteria). The session that works
+     on the item receives them. Never indent a "- [ ]" line under an item.
    - Aim for 8 to 20 items. Do not plan the whole product; plan the first
      working version. You will be able to add more as you build.
    $(skill_load_line agentloop-plan-items)
@@ -1151,7 +1172,9 @@ features in this session.
    If PLAN.md is currently written in ANY other style — status tables, prose,
    bare [x] lines, emoji markers — rewrite it into this format, preserving
    every item's meaning and done/not-done status. The loop can only parse
-   "- [ ]" lines, so anything else is invisible to it.
+   "- [ ]" lines, so anything else is invisible to it. Details indented two
+   spaces under an item are allowed and are handed to the session doing it —
+   add them where an item's constraints or acceptance criteria are unclear.
 7. Project skills in .agents/skills/ (everything except agentloop-*): fix or
    delete any that are stale, wrong or duplicated, and say why.
 8. Commit with a message starting "chore: ", push, and open a PR with:
@@ -1191,6 +1214,13 @@ Your task for this session is exactly this item from PLAN.md:
 
     $1
 
+EOF
+  if [[ -n "${2:-}" ]]; then
+    echo "Details and acceptance criteria (from PLAN.md — part of the item):"
+    printf '%s\n' "$2" | sed 's/^/    /'
+    echo
+  fi
+cat <<EOF
 Do this:
 
 0. You are already on a fresh work branch created for this session — stay on
@@ -1376,17 +1406,19 @@ for (( i = 1; i <= COUNT; i++ )); do
   fi
 
   item="$(plan_next)"
+  details="$(plan_details)"
   echo
   rule
   printf 'TASK %d/%s   ·   %s remaining\n' "$i" \
     "$([[ "$COUNT" -ge 9999 ]] && echo all || echo "$COUNT")" "$before_remaining"
   echo "$item"
+  [[ -n "$details" ]] && printf '%s\n' "$details" | sed 's/^/  /'
   rule
 
   graph_sync
   new_work_branch "agent" "$item"
   tick_item_on_branch "$item"
-  run_agent "$(prompt_item "$item")"
+  run_agent "$(prompt_item "$item" "$details")"
 
   # Verify against GitHub first: a PR for this branch = work definitely
   # happened, whatever the local ref view claims.
