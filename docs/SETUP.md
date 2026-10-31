@@ -1112,10 +1112,12 @@ $ ./run.sh --address-review 17
 
 The loop checks out the PR's branch, hands the agent every review summary,
 inline comment (with `file:line`) and conversation comment, and the agent
-pushes the changes to the same PR. A `blocked` PR stays blocked until you
-remove the label; an `automated` one continues to CI and auto-merge. It works
-on plan PRs too: comment "split item 3", "drop the caching milestone" on the
-`--init`/`--replan` PR and let the agent revise `PLAN.md` before you merge.
+pushes the changes to the same PR — or, where it disagrees, answers with a PR
+comment. An existing PR is never relabelled: an `automated` one continues to
+CI and auto-merge; a `blocked`, `plan` or unlabelled one (say, a PR you opened
+yourself) comes back to you. It works on plan PRs too: comment "split item 3",
+"drop the caching milestone" on the `--init`/`--replan` PR and let the agent
+revise `PLAN.md` before you merge.
 
 Issues work the same way — `./run.sh --issue 42` hands the agent issue #42
 (title, body, maintainers' comments) as a one-off task, and the PR always
@@ -1492,10 +1494,13 @@ a small `git` wrapper (written to `logs/.git-guard` at each start, mounted
 read-only ahead of the real git) that refuses force pushes, remote deletions,
 pushes to `main`/`master`, and any push whose unpushed commits contain the
 value of a secret from the container's environment (the OpenRouter/Anthropic/
-Codex/NVIDIA keys, the GitHub token). It binds Codex, which has no deny rules,
-and it holds on private Free-plan repos, where GitHub refuses branch
-protection. A blocked push explains itself to the agent; nothing else about
-git changes. `GIT_GUARD=0` in `.agentloop.local` turns it off.
+Codex/NVIDIA keys, the GitHub token). Besides reading the command line it asks
+git itself — a dry run — where the push would really go, so `--all`, wildcard
+refspecs, push config and aliases cannot route around it. It binds Codex,
+which has no deny rules, and it holds on private Free-plan repos, where GitHub
+refuses branch protection. A blocked push explains itself to the agent;
+nothing else about git changes. It guards against accidents, not against an
+agent set on evading it. `GIT_GUARD=0` in `.agentloop.local` turns it off.
 
 ---
 

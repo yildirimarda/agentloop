@@ -156,7 +156,7 @@ protections are engine-config:
 | opencode | `opencode.json` → `permission` | glob deny rules (force push, push to main, terraform apply, workflow edits) |
 | claude | `.claude/settings.json` → `permissions.deny` | same rules, Claude Code syntax |
 | codex | — (no command-deny mechanism) | approval/sandbox modes only, no per-command globs. The git guard below and the GitHub-side layers (the PAT cannot push workflows, branch protection blocks main) carry the weight |
-| *(all)* | `logs/.git-guard`, written by `run.sh` | **git guard**: a `git` wrapper mounted read-only as `/usr/local/sbin/git` (ahead of the real git on PATH) in every container. It refuses force pushes, deletions, pushes to `main`/`master` and pushes whose unpushed commits contain the value of any secret in the container's environment — identically for every engine, and also on private Free-plan repos where branch protection is unavailable. `GIT_GUARD=0` disables it |
+| *(all)* | `logs/.git-guard`, written by `run.sh` | **git guard**: a `git` wrapper mounted read-only as `/usr/local/sbin/git` (ahead of the real git on PATH) in every container. It refuses force pushes, deletions, pushes to `main`/`master` (from the command line and from a `git push --dry-run --porcelain` of the same command, so config, wildcards and aliases are covered) and pushes whose unpushed commits contain the value of any secret in the container's environment — identically for every engine, and also on private Free-plan repos where branch protection is unavailable. `GIT_GUARD=0` disables it |
 | *(new)* | its own config file | must express the same deny set, or document why the outer layers suffice |
 
 The workflow contract reaches each engine differently: OpenCode and Codex
