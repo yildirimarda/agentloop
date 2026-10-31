@@ -382,6 +382,11 @@ remote_plan | grep -qx -- "- \[x\] Add the second feature" || fail "second item 
 [[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "merged work branches were not deleted"
 [[ -z "$(git -C "$PROJ" status --porcelain)" ]] || fail "loop left the tree dirty"
 ls "$PROJ"/logs/*-opencode.jsonl >/dev/null 2>&1 || fail "no session transcript written"
+# item details reach the session that does the item — and only that one
+grep -q "Details and acceptance criteria" "$FAKE_STATE/prompt_1.txt" || fail "item details missing from the prompt"
+grep -q -- '- print "hello <name>"' "$FAKE_STATE/prompt_1.txt"      || fail "item detail line missing from the prompt"
+grep -q "Details and acceptance criteria" "$FAKE_STATE/prompt_2.txt" && fail "details leaked into the next item's prompt"
+expect_out '- accept a --name flag'
 
 # ── 2. The agent forgot the label → bash adds "automated", PR still merges ───
 new_project nolabel
@@ -430,6 +435,9 @@ expect_out "STOPPING: CI is still failing on PR #1"
 
 # ── 7. Discovery: items the agent appends are reported and counted ───────────
 new_project discover
+run_sh --next
+expect_out "next:      Add the first feature"
+expect_out '- print "hello <name>"'
 export FAKE_DISCOVER=1
 run_sh
 [[ "$RC" == 0 ]] || fail "discovery: loop exited $RC"

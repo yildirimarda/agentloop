@@ -331,6 +331,23 @@ assert d['provider']['openrouter']['options']['setCacheKey'] is True
 " || fail "opencode.json token-budget settings missing"
 grep -q "Output discipline" AGENTS.md || fail "AGENTS.md lacks output-discipline section"
 
+# ── 13b'. Item details: indented lines under the next item ───────────────────
+(
+  eval "$(sed -n '/^plan_details()/,/^}$/p' run.sh)"
+  PLAN="$TMP/details-plan.md"
+  printf '%s\n' '# Plan' '- [x] done item' '  - detail of a DONE item' \
+    '- [ ] next item' '  - limit 5 per minute' '	- tab-indented detail' '    - nested detail' \
+    '  - [ ] nested checkbox ends the details' '  - not reached' > "$PLAN"
+  got="$(plan_details)"
+  [[ "$got" == "$(printf '%s\n' '- limit 5 per minute' '- tab-indented detail' '  - nested detail')" ]] \
+    || fail "plan_details: unexpected details: [$got]"
+  printf '%s\n' '- [ ] item' '  - first' '' '  - after a blank line' > "$PLAN"
+  [[ "$(plan_details)" == "- first" ]] || fail "plan_details: a blank line must end the details"
+  printf '%s\n' '- [ ] item' 'not indented' > "$PLAN"
+  [[ -z "$(plan_details)" ]] || fail "plan_details: an unindented line is not a detail"
+  exit 0
+) || exit 1
+
 # ── 13c. Skills: shipped, valid, listed, owned correctly ─────────────────────
 # Every template skill directory is registered in install.sh (and vice versa)
 # and passes the same checks the engines apply (name = dir, description).

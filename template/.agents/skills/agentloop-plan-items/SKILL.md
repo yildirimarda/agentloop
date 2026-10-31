@@ -19,13 +19,18 @@ decides whether that session takes 8 turns or 40 and breaks halfway.
 ## Milestone 1: <name>
 
 - [ ] Add config loading from environment variables, with validation
+  - fail fast with one message naming every missing variable
+  - document each variable in README.md
 - [x] A finished item
 
 ## Discovered
 ```
 
 - An item line is dash, space, `[ ]`, space, text. Done is `[x]`.
-- Never indent a checkbox under an item: a nested checkbox is a separate item.
+- Optional DETAILS: lines indented by two spaces directly under an item. The
+  loop passes them to the session as acceptance criteria — constraints, edge
+  cases, interfaces, files to touch. A blank line ends them. Never indent a
+  checkbox under an item: a nested checkbox is a separate item.
 - Never write a checkbox-shaped line inside an HTML comment in PLAN.md: the
   loop greps for that shape and would hand it out as work.
 - `## Discovered` is the last section.
