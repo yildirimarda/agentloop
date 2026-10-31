@@ -160,6 +160,8 @@ Done. Two manual steps remain:
      · Permissions -> Pull requests: Read and write
      · Permissions -> Actions: Read-only   (CI verdict polling — note:
        GitHub offers no "Checks" permission on fine-grained PATs)
+     · Permissions -> Issues: Read-only    (optional: ./run.sh --issue N
+       on private repos)
      · Select NOTHING else (no admin, no org scopes)
 
    Then store it in the keychain:

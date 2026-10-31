@@ -688,6 +688,7 @@ Go to **github.com/settings/personal-access-tokens/new** and set:
 | Permissions → Contents | **Read and write** |
 | Permissions → Pull requests | **Read and write** |
 | Permissions → Actions | **Read-only** — lets the loop's PR polling read the CI verdict via workflow runs. (You won't find a "Checks" permission: GitHub doesn't offer it on fine-grained PATs, which is why the loop reads the Actions API instead.) |
+| Permissions → Issues | **Read-only** — optional, only for `./run.sh --issue N` on private repos |
 | Everything else | leave alone |
 
 Do **not** grant: Administration, Actions, Workflows, Secrets, or any
@@ -1098,6 +1099,32 @@ $ ./run.sh --next                             # where the plan stands
 three attempts. The description says what it tried. Usually the item was
 underspecified — rewrite it in `PLAN.md` and let it try again.
 
+Or answer on the PR itself: write review comments as you would for a person
+("use the existing retry helper", "the edge case is an empty file, not a
+missing one"), then
+
+```
+$ ./run.sh --address-review 17
+```
+
+The loop checks out the PR's branch, hands the agent every review summary,
+inline comment (with `file:line`) and conversation comment, and the agent
+pushes the changes to the same PR. A `blocked` PR stays blocked until you
+remove the label; an `automated` one continues to CI and auto-merge. It works
+on plan PRs too: comment "split item 3", "drop the caching milestone" on the
+`--init`/`--replan` PR and let the agent revise `PLAN.md` before you merge.
+
+Issues work the same way — `./run.sh --issue 42` hands the agent issue #42
+(title, body, maintainers' comments) as a one-off task, and the PR always
+carries `Closes #42`, so merging closes the issue. On private repos the
+agent token additionally needs **Issues: Read-only**.
+
+Both modes read only text written by maintainers (author association
+OWNER, MEMBER or COLLABORATOR) and never by bots: an issue from a stranger
+can carry a prompt injection aimed at an agent that holds a push token.
+`--issue` refuses an outsider's issue until you have read it and re-run with
+`--trust-input`.
+
 ### Weekly
 
 ```
@@ -1166,6 +1193,8 @@ keeps going empty is easy to spot and drop.
 | `./run.sh --init -f brief.md` | Same, description read from a file |
 | `./run.sh --replan` | Audit code against `PLAN.md` and restructure it |
 | `./run.sh --task "text"` | One-off task, ignores `PLAN.md` |
+| `./run.sh --issue 42` | One-off task from GitHub issue #42 (text + maintainers' comments); the PR gets `Closes #42` |
+| `./run.sh --address-review 17` | The agent works through the review comments on PR #17, on its branch — including plan PRs ("split item 3") |
 | `./run.sh --next` | Dry run: print the next item. No API calls |
 | `./run.sh --skills` | List the skills sessions can load, flag malformed ones. No API calls |
 | `./run.sh --stats` | Per engine/model results from `logs/history.tsv`: merged, merged on first CI, empty sessions, tokens, cost. No API calls |
