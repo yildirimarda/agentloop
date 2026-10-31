@@ -515,8 +515,13 @@ executable
 ### 3.1 Build
 
 ```
-$ docker build -t agent -f Dockerfile.agent .
+$ ./run.sh --build
 ```
+
+That is `docker build -t agent -f Dockerfile.agent .` plus a label holding
+the hash of `Dockerfile.agent` — every run compares it and warns when the image
+is older than the Dockerfile (a forgotten rebuild otherwise fails in confusing
+ways mid-run). Plain `docker build` still works; you just lose that warning.
 
 First build: 3-8 minutes depending on your connection. Later builds are mostly
 cached unless you edit an early layer.
@@ -592,7 +597,7 @@ RUN uv tool install pre-commit
 RUN npm install -g @redocly/cli
 ```
 
-Then rebuild (`docker build -t agent -f Dockerfile.agent .`) and re-run 3.2.
+Then rebuild (`./run.sh --build`) and re-run 3.2.
 
 Note on pyspark: don't install it here. Keep it in `pyproject.toml` so the agent
 installs it with `uv sync` and versions can't drift. Java is already present, so
@@ -718,8 +723,23 @@ green and unmerged, with no error anywhere — a genuinely confusing failure.
 
 ### 4.4 Verify
 
-These verification commands use host gh for convenience — if you don't keep a
-host gh login, check the same things in the repo's Settings → Branches and
+The quick way — everything the loop needs, checked from inside the container
+with the agent's own token, changing nothing:
+
+```
+$ ./run.sh --doctor
+```
+
+It checks Docker, the image (and whether it is older than `Dockerfile.agent`),
+the engine CLIs and the git guard inside it, the keychain entries, the
+token's access to this repo, the labels, Actions read access, auto-merge,
+`PLAN.md` and skill format, the `AGENTS.md` project reference, and — on the
+opencode engine — whether your OpenRouter models (fallbacks included) still
+exist, can call tools, and how many free requests are left today. Every ✖
+comes with the command that fixes it.
+
+The manual way: these commands use host gh for convenience — if you don't keep
+a host gh login, check the same things in the repo's Settings → Branches and
 Settings → General pages instead.
 
 ```
@@ -1150,6 +1170,8 @@ keeps going empty is easy to spot and drop.
 | `./run.sh --skills` | List the skills sessions can load, flag malformed ones. No API calls |
 | `./run.sh --stats` | Per engine/model results from `logs/history.tsv`: merged, merged on first CI, empty sessions, tokens, cost. No API calls |
 | `./run.sh --stop` | From another terminal: the running loop ends cleanly after its current item |
+| `./run.sh --doctor` | Check everything a run needs (docker, stale image, tools, secrets, token access, labels, models, free quota, plan/skill format). Changes nothing |
+| `./run.sh --build` | Build the agent image, stamped with the `Dockerfile.agent` hash so runs warn when it is stale |
 | `./run.sh --reindex` | Rebuild the Graphify graph from scratch |
 | `./run.sh --github-setup` | Branch protection + auto-merge + labels, from inside the container (`gh-admin` keychain token) |
 | `./run.sh --help` | All flags |
@@ -1730,14 +1752,13 @@ $ ./run.sh --init "<description>"
 ### Health check in one command
 
 ```bash
-./run.sh --next && \
-gh pr list --label blocked && \
-jq -r 'select(.type=="tool_use") | .tool // .name' logs/*.jsonl \
-  | sort | uniq -c | sort -rn | head
+./run.sh --doctor   # can a run start? (docker, image, secrets, token, labels, models)
+./run.sh --stats    # how are the runs going? (merged, first-try CI, empty sessions, cost)
+./run.sh --next     # where does the plan stand?
 ```
 
-Where the plan stands, what needs you, and whether the agent is using tools
-properly.
+Plus `gh pr list --label blocked` (host gh) for the PRs that need you —
+`--doctor` counts those too.
 
 ---
 

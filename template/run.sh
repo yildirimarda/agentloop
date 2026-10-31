@@ -41,8 +41,11 @@ MAX_COST=""             # USD budget for one run (engines that report cost)
 NOTIFY=0                # notify (macOS banner / webhook) when a long run ends
 HISTORY="logs/history.tsv"
 ARG_TEXT=""
-ANTHROPIC_KEY=""
 SKILLS_DIR=".agents/skills"
+# Everything in_container reads, defined up front: under `set -u` an unset one
+# would abort modes (like --doctor) that run containers before the preflight.
+GH_RUN_TOKEN="" GH_AGENT_TOKEN="" OPENROUTER_KEY="" ANTHROPIC_KEY="" CODEX_KEY="" NVIDIA_KEY=""
+SKILLS_MOUNT="" GUARD_MOUNT=""
 
 # ── Local per-machine overrides: .agentloop.local (gitignored) ───────────────
 # Change model/engine without touching git. KEY=VALUE lines, no quotes:
@@ -87,6 +90,12 @@ Modes
                             merged, first-try CI, empty sessions, tokens, cost
       --stop                ask the run in progress (another terminal) to stop
                             cleanly after its current item
+      --doctor              check everything a run needs — docker, image (and
+                            whether it is stale), tools, secrets, token access,
+                            labels, model availability and free quota, plan
+                            and skill format. Changes nothing
+      --build               build the agent image, stamped with the hash of
+                            Dockerfile.agent so runs notice when it is stale
       --reindex             rebuild the Graphify knowledge graph from scratch
       --github-setup        run setup-github.sh inside the container using the
                             "gh-admin" keychain token (no host gh login needed)
@@ -164,6 +173,8 @@ while (( $# )); do
     --skills)       MODE="skills"; shift ;;
     --stats)        MODE="stats"; shift ;;
     --stop)         MODE="stop"; shift ;;
+    --doctor)       MODE="doctor"; shift ;;
+    --build)        MODE="build"; shift ;;
     --reindex)      MODE="reindex"; shift ;;
     --github-setup) MODE="ghsetup"; shift ;;
     -f|--file)      f="${2:?-f needs a path}"
@@ -233,6 +244,18 @@ plan_details() {
       sub(/^(  |\t)/, "")
       print
     }' "$PLAN" 2>/dev/null
+}
+
+# Lines that look like plan items but are invisible to the loop, and open
+# items that appear twice. One finding per output line.
+plan_lint() {
+  [[ -f "$PLAN" ]] || return 0
+  grep -nE '^[[:space:]]*([*+]|[0-9]+[.)])[[:space:]]+\[[ xX]?\]' "$PLAN" | sed -E 's/^([0-9]+):.*/line \1: checkbox under "*", "+" or a number — the loop only reads "- [ ]"/'
+  grep -nE '^[[:space:]]*-\[[ xX]?\]' "$PLAN" | sed -E 's/^([0-9]+):.*/line \1: no space between "-" and "[" — invisible to the loop/'
+  grep -nE '^[[:space:]]*- \[\]' "$PLAN" | sed -E 's/^([0-9]+):.*/line \1: "[]" needs a space inside: "[ ]"/'
+  grep -nE '^[[:space:]]*- \[[ xX]\][^[:space:]]' "$PLAN" | sed -E 's/^([0-9]+):.*/line \1: no space after "]"/'
+  grep -E '^[[:space:]]*- \[ \]' "$PLAN" | sed -E 's/^[[:space:]]*- \[ \][[:space:]]*//' | sort | uniq -d \
+    | sed 's/^/duplicate open item: /'
 }
 
 # ── Skills (.agents/skills/<name>/SKILL.md — the portable location) ──────────
@@ -468,113 +491,54 @@ if [[ "$MODE" == "stats" ]]; then
   exit 0
 fi
 
-# ── Cheap guards before any heavy checks ─────────────────────────────────────
-if [[ "$MODE" == "init" && -f "$PLAN" ]]; then
-  # The installer ships a skeleton PLAN.md. If it is still byte-identical to
-  # the one recorded in the .agentloop stamp, nobody has written a real plan
-  # yet — let --init replace it. A modified plan stays protected.
-  _stamp_hash="$({ grep '^hash:PLAN.md=' .agentloop 2>/dev/null || true; } | cut -d= -f2)"
-  if command -v md5sum >/dev/null 2>&1; then _cur_hash="$(md5sum < "$PLAN" | cut -d' ' -f1)"
-  else _cur_hash="$(md5 -q "$PLAN")"; fi
-  if [[ -n "$_stamp_hash" && "$_cur_hash" == "$_stamp_hash" ]]; then
-    info "PLAN.md is the untouched installer skeleton — --init will replace it"
-  else
-    die "$PLAN already exists — refusing to overwrite it.
-Use ./run.sh --replan to restructure it, or delete the file first if you
-really want a fresh start."
-  fi
-fi
+# ── Docker wrappers ──────────────────────────────────────────────────────────
+in_container() {
+  # agent-venv shadows /work/.venv with its own named volume so the
+  # container's uv-managed venv never lands in the bind-mounted repo on the
+  # host. Without this, a venv recreated inside the (Linux) container writes
+  # symlinks like .venv/bin/python -> /usr/bin/python3; that exact path
+  # differs across host/container, so reading the same absolute symlink from
+  # macOS resolves to the Xcode Command Line Tools stub instead -- triggering
+  # repeated CLT install prompts and a broken (ancient system) interpreter
+  # the moment the host runs ruff/pytest/uv in a project managed by agentloop.
+  docker run --rm \
+    --label "agentloop.repo=$REPO_DIR" \
+    --label "agentloop.run=$RUN_ID" \
+    ${CONTAINER_NAME:+--name "$CONTAINER_NAME"} \
+    --add-host=host.docker.internal:host-gateway \
+    -v "$REPO_DIR:/work" \
+    -v agent-venv:/work/.venv \
+    -v agent-cache:/home/agent/.cache \
+    -v agent-claude-home:/home/agent/.claude \
+    ${SKILLS_MOUNT:+-v "$SKILLS_MOUNT"} \
+    ${GUARD_MOUNT:+-v "$GUARD_MOUNT"} \
+    -e OPENROUTER_API_KEY="$OPENROUTER_KEY" \
+    -e ANTHROPIC_API_KEY="$ANTHROPIC_KEY" \
+    -e CODEX_API_KEY="$CODEX_KEY" \
+    -e NVIDIA_API_KEY="$NVIDIA_KEY" \
+    -e GH_TOKEN="${GH_RUN_TOKEN:-$GH_AGENT_TOKEN}" \
+    -e GH_PROMPT_DISABLED=1 \
+    -e GH_NO_UPDATE_NOTIFIER=1 \
+    -e GRAPHIFY_QUERY_LOG_DISABLE=1 \
+    "$IMAGE" "$@"
+}
 
-# ── Preflight ────────────────────────────────────────────────────────────────
-# Note: no host gh required. Every GitHub call — the agent's pushes, PR
-# creation, and this script's own PR polling — runs inside the container,
-# authenticated by a keychain token passed as GH_TOKEN.
-docker info >/dev/null 2>&1 \
-  || die "Docker is not running. Start it with 'colima start' or open Docker Desktop."
-docker image inspect "$IMAGE" >/dev/null 2>&1 \
-  || die "image '$IMAGE' not found. Build it:  docker build -t $IMAGE -f Dockerfile.agent ."
+# All GitHub traffic goes through the container: gh reads GH_TOKEN, and git
+# inside the image is configured to use gh as its credential helper. The host
+# needs no gh login and no GitHub credentials at all.
+gh_c()       { in_container gh "$@"; }
+git_pull_c() { in_container git pull --ff-only --quiet >/dev/null 2>&1 || true; }
 
-# A previous run killed with Ctrl+C / a crash can leave its container running
-# against this checkout, which then fights the new run over the same files.
-# Containers are labelled per repo, so stop any leftovers before starting.
-# The label holds the full repo path, so other projects' containers are never
-# touched. A container whose owning run.sh is still alive means a second run in
-# this same checkout — refuse instead of killing it.
-_stale="$(docker ps -a --filter "label=agentloop.repo=$REPO_DIR" \
-          --format '{{.ID}} {{.Label "agentloop.run"}}' 2>/dev/null || true)"
-if [[ -n "$_stale" ]]; then
-  while read -r _cid _crun; do
-    [[ -n "$_cid" ]] || continue
-    _cpid="${_crun%%-*}"
-    if [[ -n "$_cpid" && "$_cpid" =~ ^[0-9]+$ ]] && kill -0 "$_cpid" 2>/dev/null; then
-      die "another run.sh (pid $_cpid) is already working in this checkout.
-Stop it first (Ctrl+C in its terminal, or: kill $_cpid)."
-    fi
-    echo "  found a leftover agent container from an earlier run — stopping it"
-    docker kill "$_cid" >/dev/null 2>&1 || true
-  done <<< "$_stale"
-fi
-
-# The agent works in THIS checkout — same directory, same branches. Anything
-# you leave uncommitted would be swept into its commits or dragged across its
-# branch switches. Refuse to start dirty. (Corollary, not enforceable here:
-# don't run git in this repo yourself while a run is in progress.)
-if [[ "$MODE" != "ghsetup" ]] && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
-  if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
-    die "working tree is not clean — commit or stash before starting a run.
-The agent works in this same checkout; uncommitted changes would end up in
-its commits. See what's pending with:  git status"
-  fi
-fi
-
-GH_RUN_TOKEN=""
-GH_AGENT_TOKEN=""
-OPENROUTER_KEY=""
-ANTHROPIC_KEY=""
-CODEX_KEY=""
-NVIDIA_KEY=""
-
-if [[ "$MODE" == "ghsetup" ]]; then
-  # One-time repo administration needs an admin-capable token, deliberately
-  # separate from the agent's minimal token.
-  require_secret GH_RUN_TOKEN gh-admin
-else
-  require_secret GH_AGENT_TOKEN gh-agent
-  if [[ "$ENGINE" == "claude" ]]; then
-    require_secret ANTHROPIC_KEY anthropic
-    OPENROUTER_KEY="$(secret_optional openrouter)"
-  elif [[ "$ENGINE" == "codex" ]]; then
-    require_secret CODEX_KEY codex
-    OPENROUTER_KEY="$(secret_optional openrouter)"
-  else
-    # NVIDIA NIM is optional; OpenRouter is required unless the chosen model is
-    # an NVIDIA one. (A model set only in opencode.json is not visible here —
-    # then put MODEL=nvidia-nim/... in .agentloop.local, or keep an openrouter
-    # key around.)
-    case "${MODEL:-}" in
-      nvidia*/*)
-        require_secret NVIDIA_KEY nvidia
-        OPENROUTER_KEY="$(secret_optional openrouter)" ;;
-      *)
-        NVIDIA_KEY="$(secret_optional nvidia)"
-        require_secret OPENROUTER_KEY openrouter ;;
-    esac
-  fi
-fi
-
-mkdir -p logs
-[[ "$MODE" == "plan" && ! -f "$PLAN" ]] && \
-  die "$PLAN not found. Bootstrap it first:  ./run.sh --init \"<project description>\""
-
-# Claude Code reads project skills only from .claude/skills/, while opencode
-# and codex read the portable .agents/skills/. For the claude engine that
-# directory is mounted read-only as Claude's personal skills directory inside
-# the container: the repo gains no duplicate tree, every engine sees the same
-# skills, and the mount cannot be written through.
-SKILLS_MOUNT=""
-if [[ "$ENGINE" == "claude" && -d "$REPO_DIR/$SKILLS_DIR" ]]; then
-  SKILLS_MOUNT="$REPO_DIR/$SKILLS_DIR:/home/agent/.claude/skills:ro"
-fi
+# Verified pull with retries — the post-merge accounting reads PLAN.md, and a
+# silently failed pull makes it compare a STALE plan, mis-reporting ticks.
+git_pull_verified() {
+  local i
+  for i in 1 2 3; do
+    in_container git pull --ff-only --quiet >/dev/null 2>&1 && return 0
+    sleep 5
+  done
+  return 1
+}
 
 # ── Git guard ────────────────────────────────────────────────────────────────
 # Deny rules live in per-engine config (opencode.json, .claude/settings.json)
@@ -663,56 +627,416 @@ GUARD
   chmod +x "$f"
   GUARD_MOUNT="$f:/usr/local/sbin/git:ro"
 }
-if (( GIT_GUARD )); then write_git_guard; fi
-
-# ── Docker wrappers ──────────────────────────────────────────────────────────
-in_container() {
-  # agent-venv shadows /work/.venv with its own named volume so the
-  # container's uv-managed venv never lands in the bind-mounted repo on the
-  # host. Without this, a venv recreated inside the (Linux) container writes
-  # symlinks like .venv/bin/python -> /usr/bin/python3; that exact path
-  # differs across host/container, so reading the same absolute symlink from
-  # macOS resolves to the Xcode Command Line Tools stub instead -- triggering
-  # repeated CLT install prompts and a broken (ancient system) interpreter
-  # the moment the host runs ruff/pytest/uv in a project managed by agentloop.
-  docker run --rm \
-    --label "agentloop.repo=$REPO_DIR" \
-    --label "agentloop.run=$RUN_ID" \
-    ${CONTAINER_NAME:+--name "$CONTAINER_NAME"} \
-    --add-host=host.docker.internal:host-gateway \
-    -v "$REPO_DIR:/work" \
-    -v agent-venv:/work/.venv \
-    -v agent-cache:/home/agent/.cache \
-    -v agent-claude-home:/home/agent/.claude \
-    ${SKILLS_MOUNT:+-v "$SKILLS_MOUNT"} \
-    ${GUARD_MOUNT:+-v "$GUARD_MOUNT"} \
-    -e OPENROUTER_API_KEY="$OPENROUTER_KEY" \
-    -e ANTHROPIC_API_KEY="$ANTHROPIC_KEY" \
-    -e CODEX_API_KEY="$CODEX_KEY" \
-    -e NVIDIA_API_KEY="$NVIDIA_KEY" \
-    -e GH_TOKEN="${GH_RUN_TOKEN:-$GH_AGENT_TOKEN}" \
-    -e GH_PROMPT_DISABLED=1 \
-    -e GH_NO_UPDATE_NOTIFIER=1 \
-    -e GRAPHIFY_QUERY_LOG_DISABLE=1 \
-    "$IMAGE" "$@"
+# ── Image build: stamped, so runs can tell when the image is stale ──────────
+# Every Dockerfile.agent fix (a missing package, a new engine) needs a rebuild,
+# and a forgotten rebuild fails in confusing ways mid-run. --build labels the
+# image with the Dockerfile's hash; runs and --doctor compare the two.
+dockerfile_hash() {
+  git hash-object Dockerfile.agent 2>/dev/null && return 0
+  if command -v md5sum >/dev/null 2>&1; then md5sum < Dockerfile.agent | cut -d' ' -f1
+  else md5 -q Dockerfile.agent; fi
 }
+image_dockerfile_hash() {   # the hash the image was built from (empty: unstamped)
+  local h
+  h="$(docker image inspect -f '{{index .Config.Labels "agentloop.dockerfile"}}' "$IMAGE" 2>/dev/null || true)"
+  [[ "$h" == "<no value>" ]] && h=""
+  printf '%s' "$h"
+}
+if [[ "$MODE" == "build" ]]; then
+  [[ -f Dockerfile.agent ]] || die "Dockerfile.agent not found in $REPO_DIR"
+  docker info >/dev/null 2>&1 \
+    || die "Docker is not running. Start it with 'colima start' or open Docker Desktop."
+  _h="$(dockerfile_hash)"
+  echo "> docker build -t $IMAGE -f Dockerfile.agent .   (label agentloop.dockerfile=$_h)"
+  docker build -t "$IMAGE" --label "agentloop.dockerfile=$_h" -f Dockerfile.agent .
+  exit $?
+fi
 
-# All GitHub traffic goes through the container: gh reads GH_TOKEN, and git
-# inside the image is configured to use gh as its credential helper. The host
-# needs no gh login and no GitHub credentials at all.
-gh_c()       { in_container gh "$@"; }
-git_pull_c() { in_container git pull --ff-only --quiet >/dev/null 2>&1 || true; }
+# ── Doctor: every precondition of a run, checked without changing anything ──
+# (The only write: the regenerated git guard in gitignored logs/, so the image
+# check can confirm it wins on PATH.)
+if [[ "$MODE" == "doctor" ]]; then
+  D_FAIL=0; D_WARN=0
+  d_ok()   { printf '  ✓ %s\n' "$*"; }
+  d_info() { printf '  · %s\n' "$*"; }
+  d_warn() { printf '  ⚠ %s\n' "$*"; D_WARN=$(( D_WARN + 1 )); }
+  d_fail() { printf '  ✖ %s\n' "$*"; D_FAIL=$(( D_FAIL + 1 )); }
+  d_head() { printf '\n%s\n' "$*"; }
+  echo "agentloop doctor — $REPO_DIR"
+  echo "engine: $ENGINE${MODEL:+ · model: $MODEL}${FALLBACK_MODELS:+ · fallbacks: $FALLBACK_MODELS}"
 
-# Verified pull with retries — the post-merge accounting reads PLAN.md, and a
-# silently failed pull makes it compare a STALE plan, mis-reporting ticks.
-git_pull_verified() {
-  local i
-  for i in 1 2 3; do
-    in_container git pull --ff-only --quiet >/dev/null 2>&1 && return 0
-    sleep 5
+  d_head "host"
+  if command -v git >/dev/null 2>&1; then d_ok "git $(git --version | awk '{ print $3 }')"; else d_fail "git not found"; fi
+  _docker_ok=0
+  if ! command -v docker >/dev/null 2>&1; then
+    d_fail "docker CLI not found (brew install docker colima)"
+  elif docker info >/dev/null 2>&1; then
+    d_ok "docker daemon running"; _docker_ok=1
+  else
+    d_fail "docker daemon not running — colima start (or open Docker Desktop)"
+  fi
+  if command -v jq >/dev/null 2>&1; then d_ok "jq (live view, session summaries, history metrics)"
+  else d_warn "jq not found — the live view, session summaries and history metrics need it (brew install jq)"; fi
+  if command -v security >/dev/null 2>&1; then d_ok "secrets: macOS keychain"
+  else d_fail "no macOS keychain ('security') — run.sh reads its secrets from it"; fi
+
+  d_head "repository"
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    _origin="$(git remote get-url origin 2>/dev/null || true)"
+    case "$_origin" in
+      *github.com*) d_ok "origin: $_origin" ;;
+      "") d_fail "no 'origin' remote — the loop pushes branches and opens PRs on GitHub" ;;
+      *) d_warn "origin is not on github.com ($_origin) — PRs, CI polling and automerge assume GitHub" ;;
+    esac
+    _br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    if [[ "$_br" == main ]]; then d_ok "on main"; else d_warn "on '$_br' — plan runs start from main"; fi
+    if [[ -z "$(git status --porcelain 2>/dev/null)" ]]; then d_ok "working tree clean"
+    else d_warn "working tree not clean — runs refuse to start (see: git status)"; fi
+  else
+    d_fail "not a git repository"
+  fi
+  if [[ -f .agentloop ]]; then
+    d_ok "agentloop $({ grep '^version=' .agentloop || true; } | cut -d= -f2) installed"
+  else
+    d_warn "no .agentloop stamp — later updates need: install.sh . --force --update"
+  fi
+  for _g in logs/ graphify-out/ .agentloop.local; do
+    grep -qxF "$_g" .gitignore 2>/dev/null || d_warn ".gitignore lacks '$_g' — loop files would dirty the tree"
   done
-  return 1
-}
+
+  d_head "plan"
+  if [[ -f "$PLAN" ]]; then
+    d_ok "PLAN.md: $(plan_done_count) done, $(plan_remaining) remaining"
+    if (( $(plan_done_count) + $(plan_remaining) == 0 )); then
+      d_fail "PLAN.md has no '- [ ]' items the loop can parse — ./run.sh --replan converts other formats"
+    fi
+    _lint="$(plan_lint)"
+    if [[ -n "$_lint" ]]; then
+      while IFS= read -r _l; do d_warn "PLAN.md $_l"; done <<< "$_lint"
+    fi
+    grep -q '^## Discovered' "$PLAN" || d_warn "PLAN.md has no '## Discovered' section for discovered work"
+  else
+    d_fail "no PLAN.md — ./run.sh --init \"<what you are building>\""
+  fi
+
+  d_head "agent configuration"
+  if [[ ! -f AGENTS.md ]]; then
+    d_fail "no AGENTS.md — the workflow contract is missing (install.sh . --update)"
+  elif grep -q 'Spark jobs live in `src/jobs/`' AGENTS.md; then
+    d_warn "AGENTS.md 'Project reference' still holds the template's example commands — put this project's real test/lint commands there"
+  else
+    d_ok "AGENTS.md with a project reference"
+  fi
+  if [[ "$ENGINE" == claude ]]; then
+    if grep -q '^@AGENTS.md' CLAUDE.md 2>/dev/null; then d_ok "CLAUDE.md imports AGENTS.md"
+    else d_fail "CLAUDE.md does not import AGENTS.md — Claude Code would not see the contract"; fi
+  fi
+  if [[ -f opencode.json ]]; then
+    if command -v python3 >/dev/null 2>&1 \
+       && ! python3 -c 'import json, sys; json.load(open(sys.argv[1]))' opencode.json 2>/dev/null; then
+      d_fail "opencode.json is not valid JSON"
+    elif grep -q 'CHANGE_ME' opencode.json; then
+      if [[ "$ENGINE" == opencode && -z "$MODEL" ]]; then
+        d_fail "opencode.json still has CHANGE_ME models — pick one, or MODEL=... in .agentloop.local"
+      else
+        d_warn "opencode.json still has CHANGE_ME models"
+      fi
+    else
+      d_ok "opencode.json valid"
+    fi
+  elif [[ "$ENGINE" == opencode ]]; then
+    d_fail "no opencode.json (install.sh . --update)"
+  fi
+  _sk="$(skills_list)"; _skn=0; _skbad=0
+  while IFS= read -r _f; do
+    [[ -n "$_f" ]] || continue
+    _skn=$(( _skn + 1 ))
+    _p="$(skill_problems "$_f")"
+    if [[ -n "$_p" ]]; then
+      _skbad=$(( _skbad + 1 ))
+      d_warn "skill $(basename "$(dirname "$_f")"): $(printf '%s\n' "$_p" | head -1)"
+    fi
+  done <<< "$_sk"
+  if (( _skn == 0 )); then d_warn "no skills in $SKILLS_DIR/ — install.sh . --update installs agentloop's"
+  elif (( _skbad == 0 )); then d_ok "$_skn skills, all valid (./run.sh --skills lists them)"; fi
+
+  d_head "secrets"
+  case "$ENGINE" in
+    claude) _need="anthropic" ;;
+    codex)  _need="codex" ;;
+    *) case "${MODEL:-}" in nvidia*/*) _need="nvidia" ;; *) _need="openrouter" ;; esac ;;
+  esac
+  for _s in gh-agent $_need; do
+    if [[ -n "$(secret_optional "$_s")" ]]; then d_ok "secret '$_s'"
+    else d_fail "secret '$_s' missing — security add-generic-password -s $_s -a \"\$USER\" -w '<secret>'"; fi
+  done
+  if [[ -n "$(secret_optional gh-admin)" ]]; then d_ok "secret 'gh-admin' (for --github-setup)"
+  else d_info "no 'gh-admin' secret — only ./run.sh --github-setup needs it"; fi
+  if (( NOTIFY )); then
+    if [[ -n "$(secret_optional agentloop-notify)" ]]; then d_ok "notification webhook set"
+    else d_info "notifications on, no 'agentloop-notify' webhook — macOS banner only"; fi
+  fi
+
+  _image_ok=0
+  d_head "agent image"
+  if (( ! _docker_ok )); then
+    d_info "skipped (docker not running)"
+  elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    d_fail "image '$IMAGE' not found — ./run.sh --build"
+  else
+    _image_ok=1
+    _ih="$(image_dockerfile_hash)"
+    if [[ -z "$_ih" ]]; then
+      d_info "image '$IMAGE' present, unstamped — build it with ./run.sh --build to enable staleness checks"
+    elif [[ -f Dockerfile.agent && "$_ih" != "$(dockerfile_hash)" ]]; then
+      d_warn "image '$IMAGE' was built from an older Dockerfile.agent — ./run.sh --build"
+    else
+      d_ok "image '$IMAGE' built from the current Dockerfile.agent"
+    fi
+    mkdir -p logs
+    (( GIT_GUARD )) && write_git_guard
+    _tools="$(in_container bash -c 'for t in git gh opencode claude codex graphify uv jq curl; do
+                if command -v "$t" >/dev/null 2>&1; then echo "have $t"; else echo "miss $t"; fi
+              done; echo "git-path $(command -v git)"' 2>/dev/null || true)"
+    if [[ -z "$_tools" ]]; then
+      d_fail "could not run a command in '$IMAGE'"
+    else
+      _miss="$(printf '%s\n' "$_tools" | sed -n 's/^miss //p' | tr '\n' ' ')"
+      if [[ -z "$_miss" ]]; then d_ok "tools: git gh opencode claude codex graphify uv jq curl"
+      else d_warn "not in the image: ${_miss% } — ./run.sh --build"; fi
+      if printf '%s\n' "$_tools" | grep -x "miss $ENGINE" >/dev/null; then
+        d_fail "the '$ENGINE' CLI is not in the image — ./run.sh --build"
+      fi
+      if (( GIT_GUARD )); then
+        if [[ "$(printf '%s\n' "$_tools" | sed -n 's/^git-path //p')" == /usr/local/sbin/git ]]; then
+          d_ok "git guard is the first git on PATH"
+        else
+          d_warn "git guard is not the first git on PATH — keep /usr/local/sbin ahead of /usr/bin if Dockerfile.agent sets PATH"
+        fi
+      fi
+    fi
+  fi
+
+  d_head "github (gh-agent token, from inside the container)"
+  GH_AGENT_TOKEN="$(secret_optional gh-agent)"
+  if (( ! _image_ok )) || [[ -z "$GH_AGENT_TOKEN" ]]; then
+    d_info "skipped (needs docker, the image and the gh-agent secret)"
+  else
+    _repo="$(gh_c repo view --json nameWithOwner,viewerPermission -q '.nameWithOwner + " " + .viewerPermission' 2>/dev/null || true)"
+    if [[ -z "$_repo" ]]; then
+      d_fail "the gh-agent token cannot see this repo — expired, or the repo is missing from its list (github.com/settings/personal-access-tokens)"
+    else
+      case "${_repo##* }" in
+        ADMIN|MAINTAIN|WRITE) d_ok "${_repo% *}: ${_repo##* } access" ;;
+        *) d_fail "${_repo% *}: only ${_repo##* } access — the token needs Contents and Pull requests: Read and write" ;;
+      esac
+      _labels="$(gh_c label list --limit 200 --json name -q '.[].name' 2>/dev/null || true)"
+      _miss=""
+      for _l in automated blocked plan; do grep -qx "$_l" <<< "$_labels" || _miss="$_miss $_l"; done
+      if [[ -z "$_miss" ]]; then d_ok "labels: automated, blocked, plan"
+      else d_warn "missing labels:$_miss — ./run.sh --github-setup"; fi
+      if gh_c api "repos/{owner}/{repo}/actions/runs?per_page=1" --jq '.total_count' >/dev/null 2>&1; then
+        d_ok "Actions readable (CI verdicts and failure logs)"
+      else
+        d_warn "Actions not readable — give the token 'Actions: Read-only', or CI verdicts and auto-fix fail"
+      fi
+      _set="$(gh_c api "repos/{owner}/{repo}" --jq '[.allow_auto_merge, .delete_branch_on_merge] | map(tostring) | join(" ")' 2>/dev/null || true)"
+      case "$_set" in
+        "true true") d_ok "auto-merge and delete-branch-on-merge enabled" ;;
+        "")          d_info "repository settings not readable with this token" ;;
+        *)           d_warn "auto-merge / delete-branch-on-merge: $_set — automerge falls back to watching CI (./run.sh --github-setup)" ;;
+      esac
+      _nb="$(gh_c pr list --label blocked --json number -q 'length' 2>/dev/null || true)"
+      if [[ -n "$_nb" && "$_nb" != 0 ]]; then d_warn "$_nb open PR(s) labelled 'blocked' are waiting for you"; fi
+    fi
+  fi
+
+  if [[ "$ENGINE" == opencode ]]; then
+    d_head "models (OpenRouter)"
+    _m="${MODEL:-$(sed -n 's/^[[:space:]]*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' opencode.json 2>/dev/null | head -1)}"
+    _ids=""
+    for _mm in $(printf '%s' "$_m,$FALLBACK_MODELS" | tr ',' ' '); do
+      case "$_mm" in
+        openrouter/*CHANGE_ME*) : ;;
+        openrouter/*) _ids="$_ids ${_mm#openrouter/}" ;;
+        *) d_info "$_mm — not an OpenRouter model, not checked" ;;
+      esac
+    done
+    if (( ! _image_ok )); then
+      d_info "skipped (needs docker and the image)"
+    elif [[ -n "$_ids" ]]; then
+      OPENROUTER_KEY="$(secret_optional openrouter)"
+      # Runs in the container (curl + jq live there); a script file avoids
+      # quoting jq through two shells.
+      cat > logs/.doctor-openrouter.sh <<'ORCHECK'
+#!/usr/bin/env bash
+# written by ./run.sh --doctor
+models="$(curl -fsS -m 20 https://openrouter.ai/api/v1/models 2>/dev/null)" || { echo "error models"; exit 0; }
+for id in "$@"; do
+  printf '%s' "$models" | jq -r --arg id "$id" '
+    [.data[] | select(.id == $id)] as $m
+    | if ($m | length) == 0 then "model \($id) missing"
+      else $m[0] | "model \($id) \((((.supported_parameters // []) | index("tools")) != null)) \(((.pricing.prompt // "1") | tostring) == "0")"
+      end' 2>/dev/null || echo "error models"
+done
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  curl -fsS -m 20 -H "Authorization: Bearer $OPENROUTER_API_KEY" https://openrouter.ai/api/v1/key 2>/dev/null \
+    | jq -r '"key \(.data.free_model_daily_requests.limit // "?") \(.data.free_model_daily_requests.remaining // "?")"' 2>/dev/null \
+    || echo "error key"
+fi
+ORCHECK
+      # shellcheck disable=SC2086
+      _or="$(in_container bash logs/.doctor-openrouter.sh $_ids 2>/dev/null || true)"
+      rm -f logs/.doctor-openrouter.sh
+      [[ -n "$_or" ]] || d_warn "no answer from openrouter.ai (offline?)"
+      while read -r _kind _a _b _c; do
+        case "$_kind" in
+          model)
+            # "model <id> missing"  |  "model <id> <tools:true|false> <free:true|false>"
+            if [[ "$_b" == missing ]]; then
+              d_fail "$_a is not on OpenRouter (renamed, or its free variant is gone) — openrouter.ai/models?supported_parameters=tools"
+            elif [[ "$_b" != true ]]; then
+              d_fail "$_a cannot call tools — useless for agent work"
+            else
+              d_ok "$_a: available, tool calling$( [[ "$_c" == true ]] && echo ', free' )"
+            fi ;;
+          key)
+            if [[ "$_a" =~ ^[0-9]+$ && "$_b" =~ ^[0-9]+$ ]]; then
+              d_info "free-model requests today: $_b of $_a left"
+              (( _a <= 50 )) && d_warn "free-model limit is $_a/day — \$10 of OpenRouter credit raises it to 1000/day"
+              (( _b < 60 )) && d_warn "only $_b free requests left today — an item takes roughly 20-60"
+            fi ;;
+          error) d_warn "could not query openrouter.ai ($_a)" ;;
+        esac
+      done <<< "$_or"
+    fi
+  fi
+
+  echo
+  if (( D_FAIL )); then
+    echo "doctor: $D_FAIL problem(s), $D_WARN warning(s) — fix the ✖ lines first"
+    exit 1
+  fi
+  if (( D_WARN )); then echo "doctor: ready to run, with $D_WARN warning(s)"; else echo "doctor: ready to run"; fi
+  exit 0
+fi
+
+# ── Cheap guards before any heavy checks ─────────────────────────────────────
+if [[ "$MODE" == "init" && -f "$PLAN" ]]; then
+  # The installer ships a skeleton PLAN.md. If it is still byte-identical to
+  # the one recorded in the .agentloop stamp, nobody has written a real plan
+  # yet — let --init replace it. A modified plan stays protected.
+  _stamp_hash="$({ grep '^hash:PLAN.md=' .agentloop 2>/dev/null || true; } | cut -d= -f2)"
+  if command -v md5sum >/dev/null 2>&1; then _cur_hash="$(md5sum < "$PLAN" | cut -d' ' -f1)"
+  else _cur_hash="$(md5 -q "$PLAN")"; fi
+  if [[ -n "$_stamp_hash" && "$_cur_hash" == "$_stamp_hash" ]]; then
+    info "PLAN.md is the untouched installer skeleton — --init will replace it"
+  else
+    die "$PLAN already exists — refusing to overwrite it.
+Use ./run.sh --replan to restructure it, or delete the file first if you
+really want a fresh start."
+  fi
+fi
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+# Note: no host gh required. Every GitHub call — the agent's pushes, PR
+# creation, and this script's own PR polling — runs inside the container,
+# authenticated by a keychain token passed as GH_TOKEN.
+docker info >/dev/null 2>&1 \
+  || die "Docker is not running. Start it with 'colima start' or open Docker Desktop."
+docker image inspect "$IMAGE" >/dev/null 2>&1 \
+  || die "image '$IMAGE' not found. Build it:  ./run.sh --build"
+if [[ -f Dockerfile.agent ]]; then
+  _ih="$(image_dockerfile_hash)"
+  if [[ -n "$_ih" && "$_ih" != "$(dockerfile_hash)" ]]; then
+    echo "  ⚠ image '$IMAGE' was built from an older Dockerfile.agent — rebuild it: ./run.sh --build"
+  fi
+fi
+
+# A previous run killed with Ctrl+C / a crash can leave its container running
+# against this checkout, which then fights the new run over the same files.
+# Containers are labelled per repo, so stop any leftovers before starting.
+# The label holds the full repo path, so other projects' containers are never
+# touched. A container whose owning run.sh is still alive means a second run in
+# this same checkout — refuse instead of killing it.
+_stale="$(docker ps -a --filter "label=agentloop.repo=$REPO_DIR" \
+          --format '{{.ID}} {{.Label "agentloop.run"}}' 2>/dev/null || true)"
+if [[ -n "$_stale" ]]; then
+  while read -r _cid _crun; do
+    [[ -n "$_cid" ]] || continue
+    _cpid="${_crun%%-*}"
+    if [[ -n "$_cpid" && "$_cpid" =~ ^[0-9]+$ ]] && kill -0 "$_cpid" 2>/dev/null; then
+      die "another run.sh (pid $_cpid) is already working in this checkout.
+Stop it first (Ctrl+C in its terminal, or: kill $_cpid)."
+    fi
+    echo "  found a leftover agent container from an earlier run — stopping it"
+    docker kill "$_cid" >/dev/null 2>&1 || true
+  done <<< "$_stale"
+fi
+
+# The agent works in THIS checkout — same directory, same branches. Anything
+# you leave uncommitted would be swept into its commits or dragged across its
+# branch switches. Refuse to start dirty. (Corollary, not enforceable here:
+# don't run git in this repo yourself while a run is in progress.)
+if [[ "$MODE" != "ghsetup" ]] && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+    die "working tree is not clean — commit or stash before starting a run.
+The agent works in this same checkout; uncommitted changes would end up in
+its commits. See what's pending with:  git status"
+  fi
+fi
+
+GH_RUN_TOKEN=""
+GH_AGENT_TOKEN=""
+OPENROUTER_KEY=""
+ANTHROPIC_KEY=""
+CODEX_KEY=""
+NVIDIA_KEY=""
+
+if [[ "$MODE" == "ghsetup" ]]; then
+  # One-time repo administration needs an admin-capable token, deliberately
+  # separate from the agent's minimal token.
+  require_secret GH_RUN_TOKEN gh-admin
+else
+  require_secret GH_AGENT_TOKEN gh-agent
+  if [[ "$ENGINE" == "claude" ]]; then
+    require_secret ANTHROPIC_KEY anthropic
+    OPENROUTER_KEY="$(secret_optional openrouter)"
+  elif [[ "$ENGINE" == "codex" ]]; then
+    require_secret CODEX_KEY codex
+    OPENROUTER_KEY="$(secret_optional openrouter)"
+  else
+    # NVIDIA NIM is optional; OpenRouter is required unless the chosen model is
+    # an NVIDIA one. (A model set only in opencode.json is not visible here —
+    # then put MODEL=nvidia-nim/... in .agentloop.local, or keep an openrouter
+    # key around.)
+    case "${MODEL:-}" in
+      nvidia*/*)
+        require_secret NVIDIA_KEY nvidia
+        OPENROUTER_KEY="$(secret_optional openrouter)" ;;
+      *)
+        NVIDIA_KEY="$(secret_optional nvidia)"
+        require_secret OPENROUTER_KEY openrouter ;;
+    esac
+  fi
+fi
+
+mkdir -p logs
+[[ "$MODE" == "plan" && ! -f "$PLAN" ]] && \
+  die "$PLAN not found. Bootstrap it first:  ./run.sh --init \"<project description>\""
+
+# Claude Code reads project skills only from .claude/skills/, while opencode
+# and codex read the portable .agents/skills/. For the claude engine that
+# directory is mounted read-only as Claude's personal skills directory inside
+# the container: the repo gains no duplicate tree, every engine sees the same
+# skills, and the mount cannot be written through.
+SKILLS_MOUNT=""
+if [[ "$ENGINE" == "claude" && -d "$REPO_DIR/$SKILLS_DIR" ]]; then
+  SKILLS_MOUNT="$REPO_DIR/$SKILLS_DIR:/home/agent/.claude/skills:ro"
+fi
+
+# Write the git guard (write_git_guard, above) before any container starts.
+if (( GIT_GUARD )); then write_git_guard; fi
 
 # Keep the knowledge graph current so the agent can query it instead of reading
 # whole files. Never fatal — Graphify is an optimisation, not a dependency.

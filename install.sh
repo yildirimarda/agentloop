@@ -524,7 +524,7 @@ fi
 echo "  2. Fill the 'Project reference' section at the bottom of AGENTS.md"
 echo "  3. Adapt .github/workflows/ci.yml to this project's stack"
 echo "  4. Build the container once per machine (shared by all projects):"
-echo "       docker build -t agent -f Dockerfile.agent ."
+echo "       ./run.sh --build      (docker build, stamped so runs notice a stale image)"
 echo "  5. Keychain (once per machine):"
 echo "       security add-generic-password -s openrouter -a \"\$USER\" -w 'sk-or-...'"
 echo "       security add-generic-password -s gh-agent   -a \"\$USER\" -w 'github_pat_...'"
@@ -532,5 +532,6 @@ echo "       security add-generic-password -s anthropic  -a \"\$USER\" -w 'sk-an
 echo "       security add-generic-password -s codex      -a \"\$USER\" -w 'sk-...'       # only for --engine codex"
 echo "  6. ./setup-github.sh   (branch protection, auto-merge, labels)"
 echo "  7. ./run.sh --init \"<project description>\"   or write PLAN.md by hand"
+echo "  8. ./run.sh --doctor   checks all of the above (and the model) before a run"
 echo
 echo "Guide: see docs/SETUP.md in the agentloop repository."
