@@ -537,7 +537,11 @@ run_agent() {
 # host's view of refs on a macOS bind mount can lag those writes, so a false
 # negative here must never be treated as authoritative. GitHub (a PR existing
 # for the branch) is the ground truth; this is the fallback diagnostic.
-made_commits() { [[ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]]; }
+# Commits the AGENT made: counted from BRANCH_BASE, which new_work_branch and
+# tick_item_on_branch move past the loop's own tick commit — otherwise that
+# tick alone made every empty session look like "commits exist but no PR".
+BRANCH_BASE=""
+made_commits() { [[ -n "$(git log --oneline "${BRANCH_BASE:-origin/main}..HEAD" 2>/dev/null)" ]]; }
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
 pr_labels()    { gh_c pr view "$1" --json labels -q '.labels[].name' 2>/dev/null || true; }
 
@@ -591,6 +595,7 @@ new_work_branch() {
   branch="${prefix}${slug:+/$slug}-$(date +%m%d%H%M%S)"
   git switch -c "$branch" >/dev/null 2>&1 || die "could not create work branch $branch"
   WORK_BRANCH="$branch"
+  BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
   info "work branch: $branch"
 }
 WORK_BRANCH=""
@@ -607,6 +612,7 @@ tick_item_on_branch() {
   sed -i.bak "${ln}s/- \[ \]/- [x]/" "$PLAN" && rm -f "$PLAN.bak"
   git add "$PLAN"
   git commit -q -m "chore: tick plan item (loop-managed; lands only when this PR merges)" || true
+  BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
 }
 
 # After a failed/empty session, try to leave the repo back on a clean main.
@@ -1132,6 +1138,7 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
     if [[ "$cur_branch" == "main" || "$cur_branch" == "master" ]]; then
       new_work_branch "task" "$ARG_TEXT"
     fi
+    BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
     run_agent "$ARG_TEXT"; rc=$?
     pr="$(current_pr || true)"
     if [[ -z "$pr" ]] && ! made_commits; then
@@ -1344,4 +1351,7 @@ echo "completed:     $completed_n item(s)"
 echo "added to plan: $total_added item(s)"
 echo "plan:          $(plan_done_count) done, $(plan_remaining) remaining"
 n="$(plan_next || true)"
-[[ -n "${n:-}" ]] && echo "next:          $n"
+# An if, not `[[ ]] && echo`: as the script's last command, a false test
+# made a fully successful run that finished the plan exit with status 1.
+if [[ -n "${n:-}" ]]; then echo "next:          $n"; fi
+exit 0
