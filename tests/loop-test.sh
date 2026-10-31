@@ -107,6 +107,13 @@ STUB
 cat > "$STUBS/curl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_STATE/curl_calls"
+case "$*" in
+  *openrouter.ai/api/v1/models*)
+    echo '{"data":[{"id":"vendor/good","supported_parameters":["tools","temperature"],"pricing":{"prompt":"0"}},{"id":"vendor/notools","supported_parameters":["temperature"],"pricing":{"prompt":"0"}}]}' ;;
+  *openrouter.ai/api/v1/key*)
+    echo '{"data":{"free_model_daily_requests":{"limit":50,"remaining":38,"used":12},"is_free_tier":false}}' ;;
+esac
+exit 0
 STUB
 
 cat > "$STUBS/graphify" <<'STUB'
@@ -223,6 +230,7 @@ case "${1:-}" in
           esac
         done ;;
       comment) : ;;
+      list) echo 0 ;;
     esac ;;
   run)
     case "$*" in
@@ -230,9 +238,13 @@ case "${1:-}" in
       "run view "*"--json jobs"*) printf '77\tci\n' ;;
       "run rerun"*) : ;;
     esac ;;
+  repo) [[ "${2:-}" == view ]] && echo "test/repo WRITE" ;;
+  label) [[ "${2:-}" == list ]] && printf '%s\n' automated blocked plan ;;
   api)
     ep="$2"
     case "$ep" in
+      *actions/runs\?per_page=1*) echo 0 ;;
+      "repos/{owner}/{repo}") echo "true true" ;;
       *actions/runs\?head_sha=*)
         sha="${ep#*head_sha=}"; sha="${sha%%&*}"
         n="$(pr_for_sha "$sha")" || exit 0
@@ -250,7 +262,7 @@ case "${1:-}" in
           *)       cat "$FAKE_STATE/issue_meta" 2>/dev/null ;;
         esac ;;
     esac ;;
-  auth|label|repo) : ;;
+  auth) : ;;
 esac
 exit 0
 STUB
@@ -621,5 +633,52 @@ grep -q 'stopped' "$FAKE_STATE/osascript_calls" && grep -q "needs you" "$FAKE_ST
 new_project notify-off
 run_sh
 [[ -e "$FAKE_STATE/osascript_calls" ]] && fail "notify: notified without --notify"
+
+# ── 20. --build stamps the image; a changed Dockerfile.agent is noticed ──────
+new_project build
+run_sh --build
+[[ "$RC" == 0 ]] || fail "--build exited $RC"
+[[ "$(cat "$FAKE_STATE/image_label")" == "$(git -C "$PROJ" hash-object Dockerfile.agent)" ]] \
+  || fail "--build did not stamp the image with the Dockerfile hash"
+run_sh
+reject_out "older Dockerfile.agent" "fresh image reported stale"
+echo "# a new tool" >> "$PROJ/Dockerfile.agent"
+git -C "$PROJ" commit -qam "chore: change the image"
+git -C "$PROJ" push -q origin main 2>/dev/null
+run_sh
+expect_out "built from an older Dockerfile.agent — rebuild it: ./run.sh --build"
+
+# ── 21. --doctor ─────────────────────────────────────────────────────────────
+new_project doctor
+run_sh --doctor -m openrouter/vendor/good --fallback-models openrouter/vendor/notools
+expect_out "✓ docker daemon running"
+expect_out "✓ PLAN.md: 0 done, 2 remaining"
+expect_out "still holds the template's example commands"
+expect_out "✓ secret 'gh-agent'"
+expect_out "✓ secret 'openrouter'"
+expect_out "skills, all valid"
+expect_out "✓ test/repo: WRITE access"
+expect_out "✓ labels: automated, blocked, plan"
+expect_out "✓ auto-merge and delete-branch-on-merge enabled"
+if command -v jq >/dev/null 2>&1; then
+  [[ "$RC" == 1 ]] || fail "--doctor: a model without tool calling must fail it (got $RC)"
+  expect_out "✓ vendor/good: available, tool calling, free"
+  expect_out "✖ vendor/notools cannot call tools"
+  expect_out "free-model requests today: 38 of 50 left"
+  expect_out "free-model limit is 50/day"
+  run_sh --doctor -m openrouter/vendor/good
+  [[ "$RC" == 0 ]] || fail "--doctor: expected ready (exit 0), got $RC"
+  expect_out "doctor: ready to run"
+fi
+printf '%s\n' '* [ ] starred item' '-[ ] no space' '- [ ] Add the second feature' >> "$PROJ/PLAN.md"
+run_sh --doctor -m openrouter/vendor/good
+expect_out 'checkbox under "*", "+" or a number'
+expect_out 'no space between "-" and "["'
+expect_out "duplicate open item: Add the second feature"
+expect_out "working tree not clean"
+git -C "$PROJ" checkout -q PLAN.md
+FAKE_MISSING_SECRETS="gh-agent" run_sh --doctor -m openrouter/vendor/good
+[[ "$RC" == 1 ]] || fail "--doctor: a missing gh-agent secret must fail it"
+expect_out "✖ secret 'gh-agent' missing"
 
 echo "loop-test OK"
