@@ -57,9 +57,12 @@ Reference shapes already handled:
 {"type":"error","error":{"message":"…"}}
 
 // Claude Code: content blocks inside assistant messages
-{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"},
+{"type":"system","subtype":"init","model":"…","mcp_servers":[{"name":"graphify","status":"connected"}]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"…"}},
+                                          {"type":"thinking","thinking":"…"},
                                           {"type":"text","text":"…"}]}}
-{"type":"result","total_cost_usd":0.42}
+{"type":"result","total_cost_usd":0.42,"usage":{"input_tokens":…,"output_tokens":…}}
+{"type":"result","is_error":true,"result":"…"}
 
 // Codex: item envelopes + per-turn usage
 {"type":"item.started","item":{"type":"command_execution","command":"bash -lc ls","status":"in_progress"}}
@@ -69,10 +72,12 @@ Reference shapes already handled:
 {"type":"turn.failed","error":{"message":"…"}}
 ```
 
-Adding an engine means extending two jq programs: `stream_view` (live view)
-and the tools-used summary in `run_agent`. `tests/install-test.sh` §11 pins
-these parsers against recorded fixture lines — add fixtures for the new engine
-there, from a real session log.
+Adding an engine means extending the jq programs in `run.sh`: `stream_view`
+(live view), and in `run_agent` the tools-used summary plus the session
+metrics (tokens, cost, knowledge-graph queries) that feed `logs/history.tsv`,
+`--stats` and `--max-cost`. `tests/install-test.sh` §11 pins the parsers
+against recorded fixture lines — add fixtures for the new engine there, from a
+real session log.
 
 ## Providers inside the opencode engine
 
