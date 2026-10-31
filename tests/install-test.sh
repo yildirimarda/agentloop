@@ -200,6 +200,24 @@ echo "$sv_out" | grep -q 'All done.'                 || fail "stream_view: openc
 echo "$sv_out" | grep -q '→ Bash'                    || fail "stream_view: claude tool_use not shown"
 echo "$sv_out" | grep -q '✖ rate limited'            || fail "stream_view: error not shown"
 
+# Claude Code: tool inputs, MCP status, thinking, failed results; OpenCode skills
+cl_out="$(printf '%s\n' \
+  '{"type":"system","subtype":"init","model":"claude-sonnet-x","mcp_servers":[{"name":"graphify","status":"connected"}]}' \
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"uv run pytest -q"}}]}}' \
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/work/src/app.py"}}]}}' \
+  '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"agentloop-ci-fix"}}]}}' \
+  '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"The test fails on Windows."}]}}' \
+  '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Reached max turns"}' \
+  '{"type":"tool_use","part":{"tool":"skill","state":{"input":{"name":"agentloop-testing"}}}}' \
+  | stream_view)"
+echo "$cl_out" | grep -q '· claude-sonnet-x · mcp: graphify connected' || fail "stream_view: claude init/MCP status not shown"
+echo "$cl_out" | grep -q '→ Bash: uv run pytest -q'          || fail "stream_view: claude Bash command not shown"
+echo "$cl_out" | grep -q '→ Read: /work/src/app.py'          || fail "stream_view: claude file path not shown"
+echo "$cl_out" | grep -q '→ Skill: agentloop-ci-fix'         || fail "stream_view: claude skill load not shown"
+echo "$cl_out" | grep -q '⋯ The test fails on Windows.'      || fail "stream_view: claude thinking not shown"
+echo "$cl_out" | grep -q '✖ Reached max turns'               || fail "stream_view: claude failed result not shown"
+echo "$cl_out" | grep -q '→ skill: agentloop-testing'        || fail "stream_view: opencode skill load not shown"
+
 # Codex fixtures (shapes verbatim from the official --json docs)
 cx_out="$(printf '%s\n' \
   '{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}' \

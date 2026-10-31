@@ -1137,6 +1137,8 @@ stream_view() {
                   elif $in.filePath then ": " + ($in.filePath | tostring)
                   elif $in.pattern  then ": " + ($in.pattern | tostring | .[0:80])
                   elif $in.question then ": " + ($in.question | tostring | .[0:100])
+                  elif $in.name     then ": " + ($in.name | tostring | .[0:80])
+                  elif $in.url      then ": " + ($in.url | tostring | .[0:100])
                   else "" end ) ) )
       elif .type == "text" then
         ((.part.text // .text // empty) | tostring | "  " + gsub("\n"; "\n  "))
@@ -1147,11 +1149,32 @@ stream_view() {
       elif .type == "error" then
         "  ✖ " + ((.error.message? // .error // .message // "error") | tostring)
       # ── Claude Code events: assistant messages with content blocks ──
+      elif .type == "system" and .subtype? == "init" then
+        # model + MCP server status up front: a "failed" graphify server
+        # explains a session that never queries the graph
+        "  · " + (.model // "claude")
+        + ( (.mcp_servers // []) | if length > 0
+              then " · mcp: " + (map((.name // "?") + " " + (.status // "?")) | join(", "))
+              else "" end )
       elif .type == "assistant" then
         (.message.content[]?
-         | if .type == "tool_use" then "  → " + .name
+         | if .type == "tool_use" then
+             "  → " + .name
+             + ( (.input // {}) as $in
+                 | if $in.command       then ": " + ($in.command | tostring | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
+                   elif $in.file_path   then ": " + ($in.file_path | tostring)
+                   elif $in.pattern     then ": " + ($in.pattern | tostring | .[0:80])
+                   elif $in.skill       then ": " + ($in.skill | tostring)
+                   elif $in.question    then ": " + ($in.question | tostring | .[0:100])
+                   elif $in.description then ": " + ($in.description | tostring | .[0:80])
+                   elif $in.url         then ": " + ($in.url | tostring | .[0:100])
+                   else "" end )
+           elif .type == "thinking" then
+             ((.thinking // empty) | tostring | "  ⋯ " + gsub("[\\n\\r]+"; "\n  ⋯ "))
            elif .type == "text" then ("  " + (.text | gsub("\n"; "\n  ")))
            else empty end)
+      elif .type == "result" and .is_error? == true then
+        "  ✖ " + ((.result // .subtype // "session failed") | tostring | .[0:200])
       # ── Codex events: item.* envelopes + turn.completed usage ──
       elif .type == "item.started" and .item.type? == "command_execution" then
         "  → exec: " + ((.item.command // "") | gsub("[\\n\\r]+"; " ⏎ ") | .[0:100])
