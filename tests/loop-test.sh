@@ -495,8 +495,15 @@ new_project nosecret
 export FAKE_MISSING_SECRETS="gh-agent"
 run_sh
 [[ "$RC" == 1 ]] || fail "missing secret: expected exit 1, got $RC"
-expect_out "keychain entry 'gh-agent' not found"
+expect_out "secret 'gh-agent' not found"
+expect_out "export AGENTLOOP_GH_AGENT_TOKEN"
 [[ -e "$FAKE_STATE/engine_calls" ]] && fail "missing secret: an agent session still ran"
+# …but an environment variable stands in for a missing keychain entry (Linux/CI)
+export FAKE_MISSING_SECRETS="gh-agent openrouter"
+AGENTLOOP_GH_AGENT_TOKEN="ghtok-from-env-123456" OPENROUTER_API_KEY="orkey-from-env-123456" run_sh
+[[ "$RC" == 0 ]] || fail "env-var secrets: loop exited $RC"
+grep "GH_TOKEN=ghtok-from-env-123456" "$FAKE_STATE/docker_calls" >/dev/null || fail "env-var secrets: GH token not passed"
+grep "OPENROUTER_API_KEY=orkey-from-env-123456" "$FAKE_STATE/docker_calls" >/dev/null || fail "env-var secrets: OpenRouter key not passed"
 unset FAKE_MISSING_SECRETS
 
 # ── 10. A dirty tree is refused ──────────────────────────────────────────────

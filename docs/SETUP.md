@@ -1702,11 +1702,25 @@ $ docker build -t agent -f Dockerfile.agent .
 $ colima start
 ```
 
-### `error: keychain entry 'X' not found`
+### `error: secret 'X' not found`
 
 ```
 $ security add-generic-password -s X -a "$USER" -w '<secret>'
 ```
+
+No macOS keychain (Linux, WSL, a CI runner)? Every secret can come from an
+environment variable instead — the keychain is tried first, the variable is
+the fallback:
+
+| Secret | Variable |
+|---|---|
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `codex` | `CODEX_API_KEY` |
+| `nvidia` | `NVIDIA_API_KEY` |
+| `gh-agent` | `AGENTLOOP_GH_AGENT_TOKEN` |
+| `gh-admin` | `AGENTLOOP_GH_ADMIN_TOKEN` |
+| `agentloop-notify` | `AGENTLOOP_NOTIFY_URL` |
 
 ### `PLAN.md not found`
 
