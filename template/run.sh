@@ -539,6 +539,45 @@ run_agent() {
 # for the branch) is the ground truth; this is the fallback diagnostic.
 made_commits() { [[ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]]; }
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
+pr_labels()    { gh_c pr view "$1" --json labels -q '.labels[].name' 2>/dev/null || true; }
+
+# Labels decide what GitHub does next — automerge acts only on "automated" and
+# skips "blocked" and "plan" — so bash sets them instead of trusting the model
+# to remember. Returns 1 when the agent asked for a human ("blocked", or
+# "plan" on an item PR): nothing will merge such a PR, so waiting for it would
+# only burn the merge timeout. Otherwise it makes sure "automated" is on (a
+# no-op when present; when it was missing, the "labeled" event starts the
+# automerge workflow right away).
+PR_FLAG=""
+ensure_automerge_label() {
+  local pr="$1" labels
+  labels="$(pr_labels "$pr")"
+  PR_FLAG=""
+  if grep -qx 'blocked' <<<"$labels"; then PR_FLAG="blocked"; return 1; fi
+  if grep -qx 'plan' <<<"$labels";    then PR_FLAG="plan";    return 1; fi
+  if ! grep -qx 'automated' <<<"$labels"; then
+    if gh_c pr edit "$pr" --add-label automated >/dev/null 2>&1; then
+      info "labelled PR #$pr 'automated' (the agent left the label off)"
+    else
+      info "could not label PR #$pr 'automated' — automerge will ignore it"
+    fi
+  fi
+  return 0
+}
+
+# Shared stop for a PR the agent handed to a human.
+stop_for_flagged_pr() {
+  local pr="$1" url
+  url="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
+  echo
+  if [[ "$PR_FLAG" == "blocked" ]]; then
+    echo "STOPPING: the agent labelled PR #$pr 'blocked' — it got stuck and needs you."
+  else
+    echo "STOPPING: the agent labelled PR #$pr '$PR_FLAG' — it asked for a human review."
+  fi
+  echo "Read its description: ${url:-open it on GitHub}"
+  keep_branch_and_return "PR needs a human" "$pr"
+}
 
 # Branch creation is deterministic work, so bash does it — the agent starts
 # every session already on a fresh work branch and can never dirty main, even
@@ -1103,6 +1142,10 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
     git log --oneline origin/main..HEAD 2>/dev/null | sed 's/^/  /'
     if [[ -n "$pr" ]]; then
       info "PR #$pr opened"
+      if ! ensure_automerge_label "$pr"; then
+        if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
+        info "PR #$pr is labelled '$PR_FLAG' — it needs a human"
+      fi
       if (( WAIT )); then
         await_merge_and_autofix "$pr" "$ARG_TEXT"
         case "$AWAIT_RC" in
@@ -1202,6 +1245,10 @@ for (( i = 1; i <= COUNT; i++ )); do
     exit 1
   fi
   info "PR #$pr opened"
+  if ! ensure_automerge_label "$pr"; then
+    if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
+    info "PR #$pr is labelled '$PR_FLAG' — it needs a human (continuing: --no-wait)"
+  fi
 
   if (( ! WAIT )); then
     info "--no-wait: continuing without waiting for the merge"

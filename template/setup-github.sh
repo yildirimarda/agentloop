@@ -109,20 +109,32 @@ gh api -X PUT "repos/$REPO/branches/main/protection" \
   "allow_deletions": false
 }
 EOF
-echo "  OK  main protected: force push off, CI required"
-
-echo
-echo "> repository settings"
+# Capture the status of the API call itself — reading $? any later (after an
+# echo) always yields 0, which used to print "OK" over a failed protection.
 PROT_RC=$?
-if [[ $PROT_RC -ne 0 ]]; then
+if [[ $PROT_RC -eq 0 ]]; then
+  echo "  OK  main protected: force push off, CI required"
+else
   echo "  WARN branch protection failed (private repo on the Free plan?)."
   echo "       Merges will not be gated by required checks; the automerge"
   echo "       workflow falls back to watching CI itself. Continuing."
 fi
-gh repo edit --enable-auto-merge --enable-squash-merge --delete-branch-on-merge \
-  || echo "  WARN could not enable repo auto-merge (plan limitation) — the automerge workflow's fallback covers this"
+
+echo
+echo "> repository settings"
+if gh repo edit --enable-auto-merge --enable-squash-merge --delete-branch-on-merge; then
+  echo "  OK  auto-merge + squash + delete branch on merge"
+else
+  # One API call sets all three, so a plan that lacks auto-merge rejects the
+  # other two as well — apply those on their own.
+  echo "  WARN could not enable repo auto-merge (plan limitation) — the automerge workflow's fallback covers this"
+  if gh repo edit --enable-squash-merge --delete-branch-on-merge; then
+    echo "  OK  squash + delete branch on merge"
+  else
+    echo "  WARN could not enable squash merge / delete-branch-on-merge"
+  fi
+fi
 set -e
-echo "  OK  squash + delete branch on merge (auto-merge: see above)"
 
 echo
 echo "> labels"
