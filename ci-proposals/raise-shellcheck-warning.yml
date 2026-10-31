@@ -1,3 +1,9 @@
+# PROPOSED replacement for .github/workflows/ci.yml (inert here — GitHub only
+# runs workflows from .github/workflows/). Apply it with:
+#   git mv ci-proposals/raise-shellcheck-warning.yml .github/workflows/ci.yml
+# Changes vs the live ci.yml: shellcheck at warning severity (what AGENTS.md
+# already asks for locally) and tests/loop-test.sh in the syntax/lint lists.
+# install-test.sh already chains loop-test.sh, so the tests run either way.
 name: ci
 
 on:
@@ -25,12 +31,13 @@ jobs:
         run: |
           bash -n install.sh
           bash -n tests/install-test.sh
+          bash -n tests/loop-test.sh
           bash -n template/run.sh
           bash -n template/setup-github.sh
 
       # Severity raised to warning so only actionable findings break CI.
       - name: Shellcheck
-        run: shellcheck -S warning install.sh tests/install-test.sh template/run.sh template/setup-github.sh
+        run: shellcheck -S warning install.sh tests/install-test.sh tests/loop-test.sh template/run.sh template/setup-github.sh
 
       - name: JSON validity
         run: |
