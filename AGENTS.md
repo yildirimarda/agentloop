@@ -65,9 +65,11 @@ unchecked, stop.
 
 ## Project reference
 
-- Tests:  `bash tests/install-test.sh`
-- Lint:   `shellcheck -S warning install.sh tests/install-test.sh template/run.sh template/setup-github.sh`
-- Syntax: `bash -n install.sh tests/install-test.sh template/run.sh template/setup-github.sh`
+- Tests:  `bash tests/install-test.sh` (ends by running `tests/loop-test.sh`,
+  the end-to-end loop test: stubbed docker/gh/keychain/engine, real git
+  against a bare repo. Run it alone while working on `template/run.sh`.)
+- Lint:   `shellcheck -S warning install.sh tests/install-test.sh tests/loop-test.sh template/run.sh template/setup-github.sh`
+- Syntax: `bash -n install.sh tests/install-test.sh tests/loop-test.sh template/run.sh template/setup-github.sh`
 - JSON:   `python3 -c "import json;[json.load(open(f)) for f in ['template/opencode.json','template/.mcp.json','template/.claude/settings.json']]"`
 - Layout: `install.sh` (installer) · `template/` (the product) ·
   `tests/` (installer tests) · `docs/SETUP.md` (user guide) ·

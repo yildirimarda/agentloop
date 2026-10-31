@@ -322,4 +322,9 @@ assert d['provider']['openrouter']['options']['setCacheKey'] is True
 " || fail "opencode.json token-budget settings missing"
 grep -q "Output discipline" AGENTS.md || fail "AGENTS.md lacks output-discipline section"
 
+# ── 14. The loop itself, end to end ──────────────────────────────────────────
+# Stubbed docker/gh/keychain/engine, real git against a bare "GitHub" repo.
+# Chained from here so CI runs it without a workflow change.
+bash "$ROOT/tests/loop-test.sh" >/dev/null || fail "loop-test failed (details above; rerun: bash tests/loop-test.sh)"
+
 echo "install-test OK"
