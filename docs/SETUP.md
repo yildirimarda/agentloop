@@ -1393,6 +1393,16 @@ remote git history and real infrastructure. GitHub's branch protection covers th
 same ground independently — three layers, none of which relies on the model
 behaving.
 
+A fourth layer is engine-independent: the **git guard**. Every container gets
+a small `git` wrapper (written to `logs/.git-guard` at each start, mounted
+read-only ahead of the real git) that refuses force pushes, remote deletions,
+pushes to `main`/`master`, and any push whose unpushed commits contain the
+value of a secret from the container's environment (the OpenRouter/Anthropic/
+Codex/NVIDIA keys, the GitHub token). It binds Codex, which has no deny rules,
+and it holds on private Free-plan repos, where GitHub refuses branch
+protection. A blocked push explains itself to the agent; nothing else about
+git changes. `GIT_GUARD=0` in `.agentloop.local` turns it off.
+
 ---
 
 ## Division of responsibility

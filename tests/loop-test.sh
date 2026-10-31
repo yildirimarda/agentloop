@@ -382,6 +382,8 @@ remote_plan | grep -qx -- "- \[x\] Add the second feature" || fail "second item 
 [[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "merged work branches were not deleted"
 [[ -z "$(git -C "$PROJ" status --porcelain)" ]] || fail "loop left the tree dirty"
 ls "$PROJ"/logs/*-opencode.jsonl >/dev/null 2>&1 || fail "no session transcript written"
+grep -q "/logs/.git-guard:/usr/local/sbin/git:ro" "$FAKE_STATE/docker_mounts" || fail "git guard not mounted into the container"
+[[ -x "$PROJ/logs/.git-guard" ]] || fail "git guard not written to logs/"
 # item details reach the session that does the item — and only that one
 grep -q "Details and acceptance criteria" "$FAKE_STATE/prompt_1.txt" || fail "item details missing from the prompt"
 grep -q -- '- print "hello <name>"' "$FAKE_STATE/prompt_1.txt"      || fail "item detail line missing from the prompt"
