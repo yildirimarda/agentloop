@@ -26,6 +26,35 @@
 - [x] Print a unified diff summary for every *.agentloop-new file at the end of an --update run
 - [x] Support installing a template subset via --only (e.g. --only workflows,claude) for repos that already have parts of the setup
 
+## Milestone 5: Skills and loop intelligence
+
+- [x] Ship portable Agent Skills in template/.agents/skills (agentloop-* managed) visible to all three engines, with prompts naming the skill a session needs and a `skills` install group
+- [x] Let sessions record project skills, report new ones after each merge, list/validate them with --skills, and disable recording with --no-learn
+- [x] Pass indented item details under a PLAN.md item to its session as acceptance criteria
+- [x] Seed item and task prompts with the knowledge graph's answer for the task (graphify query)
+- [x] Add an engine-independent git guard in every container: no force pushes, no pushes to main/master, no pushes carrying a secret
+- [x] Add --fallback-models: switch models and redo the item when a session yields nothing
+- [x] Record logs/history.tsv per item and summarise it per engine/model with --stats
+- [x] Add --stop, --max-cost and --notify for unattended runs
+- [x] Add --doctor (every run precondition, model availability and free quota) and --build (stale-image detection)
+- [x] Add --issue N and --address-review N with a maintainers-only trust gate for GitHub text
+- [x] Read secrets from environment variables where the macOS keychain is missing
+- [x] Add an end-to-end loop test with stubbed docker, gh, keychain and engine
+
+## Milestone 6: Next
+
+- [ ] Detect the default branch instead of hardcoding main in run.sh, setup-github.sh and the git guard
+  - BASE_BRANCH from `git symbolic-ref refs/remotes/origin/HEAD`, overridable in .agentloop.local
+  - loop-test scenario with a repository whose default branch is master
+- [ ] Add a local verify gate: VERIFY_CMD runs in the container after a session and a red result gets one local fix session before CI
+  - output clipped like CI logs; skipped when VERIFY_CMD is unset
+- [ ] Add --watch: when the plan is empty, poll main every N minutes and continue as soon as new items land
+- [ ] Route single items to another engine or model with a detail line (e.g. "engine: claude", "model: vendor/x")
+- [ ] Add an optional --review session: a second model reviews the PR diff and requests changes before the PR is labelled automated
+- [ ] When a session committed but opened no PR, push and open it from bash with the blocked label instead of stopping
+- [ ] Add Edit/Write deny rules for .agents/skills/agentloop-*/** to template/.claude/settings.json and assert them in tests/install-test.sh
+- [ ] Add Gemini CLI as a fourth engine per docs/ENGINES.md, with stream fixtures recorded from a real session
+
 ## Discovered
 
 <!-- Work the agent found while building. Promote with ./run.sh --replan. -->
