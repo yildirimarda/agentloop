@@ -6,7 +6,7 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$REPO_DIR"
+cd "$REPO_DIR" || exit 1
 
 PLAN="PLAN.md"
 IMAGE="${IMAGE:-agent}"
@@ -68,6 +68,8 @@ SKILLS_MOUNT="" GUARD_MOUNT=""
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
+    # tolerate CRLF files and stray spaces around values
+    _v="${_v%$'\r'}"; _v="${_v%"${_v##*[![:space:]]}"}"; _v="${_v#"${_v%%[![:space:]]*}"}"
     case "$_k" in
       ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS|MAX_COST|NOTIFY)
         printf -v "$_k" '%s' "$_v" ;;
@@ -322,13 +324,14 @@ skills_present() {
 # on it. Sessions add their tokens/cost/time to the open row.
 ITEM_OPEN=0 ITEM_MODE="" ITEM_TEXT="" ITEM_PR="" ITEM_OUTCOME=""
 ITEM_SESSIONS=0 ITEM_TOKENS=0 ITEM_COST=0 ITEM_GRAPH=0 ITEM_START=0
-RUN_COST=0 STOP_REASON="" DONE_NOTE=""
+RUN_COST=0 STOP_REASON="" DONE_NOTE="" SESSIONS_RUN=0
 add_cost() { awk -v a="${1:-0}" -v b="${2:-0}" 'BEGIN { printf "%.4f", a + b }'; }
 
 item_begin() {   # $1 = mode (item|task|init|replan|issue|review), $2 = text
   ITEM_OPEN=1; ITEM_MODE="$1"; ITEM_TEXT="$2"; ITEM_PR=""; ITEM_OUTCOME="interrupted"
   ITEM_SESSIONS=0; ITEM_TOKENS=0; ITEM_COST=0; ITEM_GRAPH=0; ITEM_START="$(date +%s)"
   AWAIT_FIXES=0   # the "fixes" column must not inherit the previous item's count
+  STOP_REASON=""  # nor a later stop the reason of an earlier, survived one
 }
 
 item_end() {     # $1 = outcome: merged|opened|plan-pr|no-pr|no-pr-commits|blocked|ci-failed|not-merged|interrupted
@@ -352,7 +355,7 @@ item_end() {     # $1 = outcome: merged|opened|plan-pr|no-pr|no-pr-commits|block
 # a failing notification never affects the run.
 json_escape() {
   local s="$1"
-  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/ }"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\r'/}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/ }"
   printf '%s' "$s"
 }
 notify() {   # $1 = title, $2 = message
@@ -382,6 +385,7 @@ notify_exit() {
   local rc="$1" project
   case "$MODE" in plan|task|init|replan|issue|review) : ;; *) return 0 ;; esac
   (( rc == 130 )) && return 0
+  (( SESSIONS_RUN > 0 )) || return 0   # a refusal before any work is not news
   project="$(basename "$REPO_DIR")"
   if (( rc == 0 )); then
     notify "agentloop: $project" "${DONE_NOTE:-finished}"
@@ -437,7 +441,8 @@ esac
 # or a typo surfaces as an arithmetic error in the middle of a run — after a
 # PR is already open. Booleans also accept true/false, yes/no, on/off.
 for _v in COUNT CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH GRAPH_BUDGET; do
-  [[ "${!_v}" =~ ^[0-9]+$ ]] || die "$_v must be a whole number (got '${!_v}')"
+  # no leading zeros: bash arithmetic reads 08 as a (broken) octal number
+  [[ "${!_v}" =~ ^(0|[1-9][0-9]*)$ ]] || die "$_v must be a whole number (got '${!_v}')"
 done
 for _v in AUTO_REPLAN HEADROOM LEARN GIT_GUARD GRAPH_CONTEXT NOTIFY; do
   case "$(printf '%s' "${!_v}" | tr '[:upper:]' '[:lower:]')" in
@@ -611,16 +616,17 @@ write_git_guard() {
 # Mounted as /usr/local/sbin/git inside the agent container. Refuses pushes
 # that force, delete, touch main/master, or carry a secret from this
 # container's environment; passes every other git call to the real git.
-self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 real=""
 IFS=: read -r -a _path <<< "${PATH:-/usr/bin:/bin}"
 for _d in "${_path[@]}"; do
-  [[ -n "$_d" && "$_d" != "$self_dir" && -x "$_d/git" ]] || continue
+  [[ -n "$_d" && -x "$_d/git" ]] || continue
+  [[ "$_d/git" -ef "${BASH_SOURCE[0]}" ]] && continue   # ourselves, however spelled
   real="$_d/git"; break
 done
 [[ -n "$real" ]] || { echo "agentloop git guard: no git found on PATH" >&2; exit 127; }
 
-# The subcommand is the first argument that is not a global option.
+# The subcommand is the first argument that is not a global option. An alias
+# that expands to push (git -c alias.p=push p ...) counts as a push.
 args=("$@"); n=${#args[@]}; sub_i=-1; i=0
 while (( i < n )); do
   case "${args[i]}" in
@@ -630,11 +636,18 @@ while (( i < n )); do
   esac
   i=$((i + 1))
 done
-(( sub_i >= 0 )) && [[ "${args[sub_i]}" == "push" ]] || exec "$real" "$@"
+(( sub_i >= 0 )) || exec "$real" "$@"
+sub="${args[sub_i]}"
+if [[ "$sub" != "push" ]]; then
+  alias_val="$("$real" "${args[@]:0:sub_i}" config --get "alias.$sub" 2>/dev/null || true)"
+  case "$alias_val" in push|"push "*) : ;; *) exec "$real" "$@" ;; esac
+fi
 
 # (kept on one line: run.sh's tests extract functions up to a lone "}")
 block() { echo "agentloop git guard: push refused — $1" >&2; [[ -n "${2:-}" ]] && echo "  $2" >&2; echo "  (a deterministic guard of the agentloop container, not a suggestion)" >&2; exit 1; }
+NOHIST="Never rewrite or delete remote history — push new commits instead."
 
+# 1. What the command line says.
 positional=()
 j=$((sub_i + 1))
 while (( j < n )); do
@@ -642,16 +655,17 @@ while (( j < n )); do
   case "$a" in
     --) positional+=("${args[@]:j+1}"); break ;;
     -f|--force|--force-with-lease|--force-with-lease=*|--force-if-includes|--mirror|-d|--delete|--prune)
-      block "'$a' is not allowed" "Never rewrite or delete remote history — push new commits instead." ;;
+      block "'$a' is not allowed" "$NOHIST" ;;
+    --all|--branches)
+      block "'$a' is not allowed" "Push your work branch only: git push -u origin HEAD" ;;
     --*) case "$a" in --push-option|--repo|--receive-pack|--exec) j=$((j + 1)) ;; esac ;;
     -o) j=$((j + 1)) ;;
-    -*f*|-*d*) block "'$a' is not allowed (force/delete)" "Never rewrite or delete remote history — push new commits instead." ;;
+    -*f*|-*d*) block "'$a' is not allowed (force/delete)" "$NOHIST" ;;
     -*) ;;
     *) positional+=("$a") ;;
   esac
   j=$((j + 1))
 done
-
 refspecs=("${positional[@]:1}")
 (( ${#refspecs[@]} )) || refspecs=("HEAD")
 cur="$("$real" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -668,11 +682,37 @@ for r in "${refspecs[@]}"; do
   sources+=("${src:-HEAD}")
 done
 
+# 2. What git would actually do. Config (push.default=matching,
+# remote.<name>.push), wildcard refspecs and alias arguments can route a push
+# where the command line does not say — a dry run reports every ref update.
+# Porcelain lines: <flag>\t<from>:<to>\t<summary>; flag + is forced, - is a
+# deletion, = is up to date.
+dry="$("$real" "${args[@]:0:sub_i+1}" --dry-run --porcelain "${args[@]:sub_i+1}" 2>/dev/null || true)"
+from_refs=()
+while IFS=$'\t' read -r flag spec _summary; do
+  [[ "$spec" == *:* ]] || continue
+  from="${spec%%:*}"; to="${spec#*:}"
+  case "$flag" in
+    "+") block "this push would force-update $to" "$NOHIST" ;;
+    "-") block "this push would delete $to" "$NOHIST" ;;
+    "=") continue ;;
+  esac
+  case "$to" in
+    refs/heads/main|refs/heads/master)
+      block "this push would update ${to#refs/heads/}" "Push your work branch (git push -u origin HEAD) and open a pull request." ;;
+  esac
+  [[ -n "$from" ]] && from_refs+=("$from")
+done <<< "$dry"
+(( ${#from_refs[@]} )) && sources=("${from_refs[@]}")
+
+# 3. No secret from this container's environment may leave in a commit.
 for var in OPENROUTER_API_KEY ANTHROPIC_API_KEY CODEX_API_KEY NVIDIA_API_KEY GH_TOKEN; do
   val="${!var:-}"
   (( ${#val} >= 12 )) || continue
-  hits="$("$real" log "${sources[@]}" --not --remotes -S"$val" --format=%h 2>/dev/null | head -5 | tr '\n' ' ')"
-  hits="${hits% }"
+  if ! hits="$("$real" log "${sources[@]}" --not --remotes -S"$val" --format=%h -- 2>/dev/null)"; then
+    block "could not scan the commits being pushed for secrets" "Push a branch: git push -u origin HEAD"
+  fi
+  hits="$(printf '%s\n' "$hits" | head -5 | tr '\n' ' ')"; hits="${hits% }"
   [[ -z "$hits" ]] || block "unpushed commit(s) $hits contain the value of \$$var" \
     "Remove it from the files AND from those commits (e.g. git reset --soft @{upstream}, or origin/main on a new branch; delete the secret; commit again), then push. Never write environment variables into files."
 done
@@ -1303,27 +1343,30 @@ run_agent() {
 
   echo
   if command -v jq >/dev/null 2>&1 && [[ -s "$log" ]]; then
+    # Every reader parses line by line and skips what is not a JSON object:
+    # a session killed mid-write (watchdog, Ctrl+C) leaves a truncated last
+    # line, which would make a plain `jq` or `jq -s` drop the whole session.
     echo "  tools used:"
     # OpenCode nests the payload under .part; Claude Code nests tool_use
     # blocks inside assistant messages.
     {
-      jq -r 'select(.type=="tool_use") | .part.tool // .tool // .name // empty' "$log" 2>/dev/null
-      jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name // empty' "$log" 2>/dev/null
-      jq -r 'select(.type=="item.completed") | .item.type
-             | select(. != "agent_message" and . != "reasoning")' "$log" 2>/dev/null
+      jq -Rr 'fromjson? | objects | select(.type=="tool_use") | .part.tool // .tool // .name // empty' "$log" 2>/dev/null
+      jq -Rr 'fromjson? | objects | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") | .name // empty' "$log" 2>/dev/null
+      jq -Rr 'fromjson? | objects | select(.type=="item.completed") | .item.type
+              | select(. != "agent_message" and . != "reasoning")' "$log" 2>/dev/null
     } | sed 's/^/    /' | sort | uniq -c | sort -rn || true
     # Totals: OpenCode reports per-step tokens; Claude Code reports cost.
-    jq -sr '[.[] | select(.type=="step_finish") | .part.tokens.total // 0] | add
-            | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
-    jq -sr '[.[] | select(.type=="turn.completed")
+    jq -Rnr '[inputs | fromjson? | objects] | [.[] | select(.type=="step_finish") | .part.tokens.total // 0] | add
+             | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
+    jq -Rnr '[inputs | fromjson? | objects] | [.[] | select(.type=="turn.completed")
              | (.usage.input_tokens // 0) + (.usage.output_tokens // 0)] | add
-            | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
-    jq -r 'select(.type=="result") | .total_cost_usd? // empty
-           | "  session cost: $" + (.|tostring)' "$log" 2>/dev/null | tail -1 || true
+             | select(. > 0) | "  session tokens: " + tostring' "$log" 2>/dev/null || true
+    jq -Rr 'fromjson? | objects | select(.type=="result") | .total_cost_usd? // empty
+            | "  session cost: $" + (.|tostring)' "$log" 2>/dev/null | tail -1 || true
     # Session metrics for history/budget: tokens (all engines), cost (claude's
     # reported total; opencode's per-step cost, 0 on free models), and how
     # often the knowledge graph was asked (MCP tools or the graphify CLI).
-    metrics="$(jq -rs '
+    metrics="$(jq -Rnr '[inputs | fromjson? | objects] |
       ( [ .[] | select(.type=="step_finish") | .part.tokens.total // 0 ]
         + [ .[] | select(.type=="turn.completed") | (.usage.input_tokens // 0) + (.usage.output_tokens // 0) ]
         + [ .[] | select(.type=="result") | (.usage.input_tokens // 0) + (.usage.output_tokens // 0) ]
@@ -1345,6 +1388,7 @@ run_agent() {
     fi
     echo "  graph: $s_graph knowledge-graph quer$( (( s_graph == 1 )) && echo y || echo ies)"
   fi
+  SESSIONS_RUN=$(( SESSIONS_RUN + 1 ))
   ITEM_SESSIONS=$(( ITEM_SESSIONS + 1 ))
   ITEM_TOKENS=$(( ITEM_TOKENS + s_tokens ))
   ITEM_GRAPH=$(( ITEM_GRAPH + s_graph ))
@@ -1981,7 +2025,7 @@ do_replan() {
   graph_sync
   new_work_branch "chore/replan" ""
   run_agent "$(prompt_replan)"
-  local rc=$? rp rp_url
+  local rp rp_url
   rp="$(current_pr || true)"
   if [[ -n "$rp" ]]; then
     rp_url="$(gh_c pr view "$rp" --json url -q .url 2>/dev/null || true)"
@@ -1990,11 +2034,19 @@ do_replan() {
     echo "Review and merge it yourself — plan PRs never auto-merge."
     ITEM_PR="$rp"; item_end plan-pr
     DONE_NOTE="plan PR #$rp is waiting for your review"
-  else
-    made_commits || abandon_work_branch
-    item_end no-pr
+    return 0
   fi
-  return "$rc"
+  echo
+  if made_commits; then
+    echo "The replan session committed but opened no pull request."
+    keep_branch_and_return "no plan PR"
+    item_end no-pr-commits; STOP_REASON="the replan session opened no plan PR"
+  else
+    echo "The replan session made no commits. Check the log above."
+    abandon_work_branch
+    item_end no-pr; STOP_REASON="the replan session produced nothing"
+  fi
+  return 1
 }
 
 # ── Text from GitHub (issues, reviews) ───────────────────────────────────────
@@ -2024,6 +2076,17 @@ review_feedback() {
     gh_c api "repos/{owner}/{repo}/issues/$pr/comments?per_page=100" \
       --jq "$f | \"@\" + .user.login + \":\\n\" + .body + \"\\n\"" 2>/dev/null
   } | tail -c 12000
+}
+
+# The commit a branch points to on GitHub right now.
+remote_head() { in_container git ls-remote origin "refs/heads/$1" 2>/dev/null | cut -f1; }
+
+# Conversation comments on a PR — to notice an agent that replied instead of
+# changing code.
+pr_comment_count() {
+  local n
+  n="$(gh_c api "repos/{owner}/{repo}/issues/$1/comments?per_page=100" --jq 'length' 2>/dev/null || true)"
+  if [[ "$n" =~ ^[0-9]+$ ]]; then echo "$n"; else echo 0; fi
 }
 
 # The issue link is deterministic work, so bash makes sure it is there: a PR
@@ -2108,7 +2171,7 @@ EOF
 # branch it stays there so the existing PR updates. Ends the script.
 run_oneoff() {
   local kind="$1" short="$2" prompt="$3" cur_branch graphctx on_main=0 rc=0 pr="" flagged=0
-  local head_branch fb pu head_before="" head_after
+  local head_branch fb pu head_before="" head_after labels comments_before=0
   # Already on a feature branch: tell the agent to stay on it. Otherwise
   # AGENTS.md's workflow would make a weak model open a SECOND branch/PR
   # instead of updating the existing one — exactly wrong for "fix this PR".
@@ -2132,8 +2195,13 @@ $(graph_section "$graphctx")"
   fi
   item_begin "$kind" "$short"
   # On an existing PR's branch the PR itself proves nothing about this
-  # session; its head commit on GitHub, before vs after, does.
-  (( on_main )) || head_before="$(gh_c pr view --json headRefOid -q .headRefOid 2>/dev/null || true)"
+  # session; the branch head on GitHub, before vs after, does (read with
+  # ls-remote: the PR API's headRefOid lags a fresh push). A review session
+  # may also answer with a PR comment instead of code — count those.
+  if (( ! on_main )); then
+    head_before="$(remote_head "$cur_branch")"
+    [[ "$kind" == review ]] && comments_before="$(pr_comment_count "$REVIEW_PR")"
+  fi
   while :; do
     (( on_main )) && new_work_branch "$kind" "$short"
     BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
@@ -2147,8 +2215,17 @@ $(graph_section "$graphctx")"
     abandon_work_branch
   done
   if [[ -n "$head_before" && -n "$pr" ]]; then
-    head_after="$(gh_c pr view "$pr" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+    head_after="$(remote_head "$cur_branch")"
     if [[ "$head_after" == "$head_before" ]]; then
+      if [[ "$kind" == review ]] && ! made_commits \
+         && (( $(pr_comment_count "$REVIEW_PR") > ${comments_before:-0} )); then
+        echo
+        echo "The agent answered on PR #$pr instead of changing code — read its reply."
+        keep_branch_and_return "the agent replied on the PR" "$pr"
+        item_end replied
+        DONE_NOTE="the agent replied on PR #$pr (no code changes)"
+        exit 0
+      fi
       if made_commits; then
         echo "  the agent committed but pushed nothing to PR #$pr"
         ITEM_OUTCOME="no-pr-commits"; STOP_REASON="the $kind session did not push to PR #$pr"
@@ -2176,22 +2253,32 @@ $(graph_section "$graphctx")"
   info "PR #$pr opened"
   ITEM_PR="$pr"
   [[ "$kind" == issue && -n "$ISSUE_NUM" ]] && ensure_closes_issue "$pr" "$ISSUE_NUM"
-  ensure_automerge_label "$pr" || flagged=1
-  if (( flagged )); then
-    if [[ "$kind" == review ]]; then
-      # A human asked for these changes on a PR that waits for a human anyway
-      # (a plan PR, or one marked blocked): hand it back for review.
+  if (( on_main )); then
+    ensure_automerge_label "$pr" || flagged=1
+  else
+    # An existing PR (yours, a plan PR, a blocked one) is never relabelled:
+    # the merge wait only continues if it is already set to auto-merge.
+    labels="$(pr_labels "$pr")"
+    if grep -qx blocked <<< "$labels"; then PR_FLAG="labelled 'blocked'"; flagged=1
+    elif grep -qx plan <<< "$labels"; then PR_FLAG="labelled 'plan'"; flagged=1
+    elif ! grep -qx automated <<< "$labels"; then PR_FLAG="not labelled 'automated'"; flagged=1
+    fi
+    if (( flagged )); then
       echo
-      echo "Feedback addressed on PR #$pr — it is labelled '$PR_FLAG', so it waits for your review."
-      [[ "$PR_FLAG" == blocked ]] && echo "Remove the 'blocked' label to let it auto-merge once CI is green."
+      echo "Changes pushed to PR #$pr — it is $PR_FLAG, so it waits for your review."
+      [[ "$PR_FLAG" == *blocked* ]] && echo "Remove the 'blocked' label to let it auto-merge once CI is green."
       keep_branch_and_return "PR waits for your review" "$pr"
       item_end opened
-      DONE_NOTE="review feedback addressed on PR #$pr (labelled $PR_FLAG)"
+      DONE_NOTE="changes pushed to PR #$pr ($PR_FLAG) — waiting for your review"
       exit 0
     fi
+  fi
+  if (( flagged )); then
     ITEM_OUTCOME="blocked"; STOP_REASON="PR #$pr is labelled '$PR_FLAG' — it needs you"
     if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
     info "PR #$pr is labelled '$PR_FLAG' — it needs a human"
+    item_end blocked
+    exit 0
   fi
   if (( ! WAIT )); then
     info "--no-wait: not waiting for the merge (automerge lands it when CI is green)"
@@ -2242,26 +2329,29 @@ case "$MODE" in
     item_begin init "$ARG_TEXT"
     graph_sync
     new_work_branch "chore/plan-draft" ""
-    run_agent "$(prompt_init)"; rc=$?
+    run_agent "$(prompt_init)"
     pr="$(current_pr || true)"
-    [[ -n "$pr" ]] || made_commits || abandon_work_branch
+    echo
     if [[ -n "$pr" ]]; then
       ITEM_PR="$pr"; item_end plan-pr; DONE_NOTE="plan PR #$pr is waiting for your review"
-    else
-      item_end no-pr; STOP_REASON="--init opened no plan PR"
-    fi
-    echo
-    if [[ -n "$pr" ]] || made_commits; then
-      pr_url="$(gh_c pr view "${pr:-}" --json url -q .url 2>/dev/null || true)"
-      echo "PLAN.md drafted${pr:+ in PR #$pr}."
+      pr_url="$(gh_c pr view "$pr" --json url -q .url 2>/dev/null || true)"
+      echo "PLAN.md drafted in PR #$pr."
       echo
       echo "Review it and merge it yourself: ${pr_url:-open the PR on GitHub}"
       echo "The plan is the one thing worth your review — a bad plan becomes"
       echo "twenty bad pull requests, and by then it is expensive to undo."
+      exit 0
+    fi
+    if made_commits; then
+      echo "STOPPING: a plan was committed but no pull request was opened."
+      keep_branch_and_return "no plan PR"
+      ITEM_OUTCOME="no-pr-commits"; STOP_REASON="--init committed a plan but opened no PR"
     else
       echo "No commits were made. Check the log above."
+      abandon_work_branch
+      ITEM_OUTCOME="no-pr"; STOP_REASON="--init produced no plan"
     fi
-    exit "$rc" ;;
+    exit 1 ;;
   replan)
     do_replan; exit $? ;;
   task)
@@ -2272,10 +2362,12 @@ case "$MODE" in
     [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]] || die "--issue needs an issue number"
     rule; echo "MODE: issue #$ISSUE_NUM"; rule
     _meta="$(gh_c api "repos/{owner}/{repo}/issues/$ISSUE_NUM" \
-      --jq '[.state, .author_association, (.pull_request != null | tostring), .user.login, .title] | @tsv' 2>/dev/null || true)"
+      --jq '[.state, .author_association, (.pull_request != null | tostring), .user.login] | @tsv' 2>/dev/null || true)"
     [[ -n "$_meta" ]] || die "could not read issue #$ISSUE_NUM — does it exist? On private repos the
 gh-agent token needs 'Issues: Read-only' as well."
-    IFS=$'\t' read -r _state _assoc _ispr _author _title <<< "$_meta"
+    IFS=$'\t' read -r _state _assoc _ispr _author <<< "$_meta"
+    # the title on its own: @tsv would escape tabs and backslashes in it
+    _title="$(gh_c api "repos/{owner}/{repo}/issues/$ISSUE_NUM" --jq '.title' 2>/dev/null | head -1 || true)"
     [[ "$_ispr" != "true" ]] || die "#$ISSUE_NUM is a pull request — use --address-review $ISSUE_NUM"
     [[ "$_state" == "open" ]] || die "issue #$ISSUE_NUM is $_state"
     if ! trusted_association "$_assoc" && (( ! TRUST_INPUT )); then
@@ -2323,8 +2415,8 @@ rm -f "$STOP_FILE"   # a request left from an earlier run must not stop this one
 if [[ -n "$MAX_COST" && "$ENGINE" == "codex" ]]; then
   info "note: codex reports tokens but no cost — --max-cost cannot be enforced"
 fi
-budget_reached() {
-  [[ -n "$MAX_COST" ]] && awk -v a="$RUN_COST" -v b="$MAX_COST" 'BEGIN { exit !(a + 0 >= b + 0) }'
+budget_reached() {   # spent something, and at least the budget
+  [[ -n "$MAX_COST" ]] && awk -v a="$RUN_COST" -v b="$MAX_COST" 'BEGIN { exit !(a + 0 > 0 && a + 0 >= b + 0) }'
 }
 
 for (( i = 1; i <= COUNT; i++ )); do
@@ -2424,6 +2516,8 @@ for (( i = 1; i <= COUNT; i++ )); do
     ITEM_OUTCOME="blocked"; STOP_REASON="PR #$pr is labelled '$PR_FLAG' — it needs you"
     if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
     info "PR #$pr is labelled '$PR_FLAG' — it needs a human (continuing: --no-wait)"
+    item_end blocked
+    continue
   fi
 
   if (( ! WAIT )); then

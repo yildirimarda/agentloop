@@ -357,6 +357,7 @@ git symbolic-ref HEAD refs/heads/main
 git commit -q --allow-empty -m init && git push -q origin main 2>/dev/null
 mkdir -p logs
 (
+  # shellcheck disable=SC2034  # REPO_DIR is read by the eval'd write_git_guard
   REPO_DIR="$PWD"; GUARD_MOUNT=""
   eval "$(sed -n '/^write_git_guard()/,/^}$/p' "$TMP/proj/run.sh")"
   write_git_guard
@@ -380,6 +381,23 @@ refused push --delete origin agent/work
 refused -C "$PWD" push --force origin HEAD
 "$G" push -q -u origin HEAD 2>/dev/null || fail "git guard: refused a normal work-branch push"
 git --git-dir=../remote.git rev-parse -q --verify refs/heads/agent/work >/dev/null || fail "git guard: normal push did not reach the remote"
+# routes to main the command line does not spell out: --all, wildcards,
+# push config, aliases — with local main ahead of the remote, each would move it
+git switch -q main && git commit -q --allow-empty -m "local main commit" && git switch -q agent/work
+refused push --all origin
+refused push origin 'refs/heads/*:refs/heads/*'
+refused -c push.default=matching push origin
+refused -c remote.origin.push=main:main push origin
+refused -c alias.p=push p origin main
+[[ "$(git --git-dir=../remote.git rev-parse main)" == "$(git rev-parse main~1)" ]] || fail "git guard: remote main moved"
+"$G" push -q origin HEAD 2>/dev/null || fail "git guard: refused a plain push of the work branch"
+# the guard must find the real git even when its own directory is on PATH
+# under another spelling (trailing slash) — no exec loop
+if command -v timeout >/dev/null 2>&1; then
+  mkdir -p "$TMP/ggbin" && cp "$G" "$TMP/ggbin/git"
+  timeout 10 env PATH="$TMP/ggbin/:$PATH" "$TMP/ggbin/git" --version >/dev/null \
+    || fail "git guard: could not find the real git past itself on PATH"
+fi
 export OPENROUTER_API_KEY="sk-or-v1-testsecretvalue0123456789"
 echo "key=$OPENROUTER_API_KEY" > leaked.txt && git add leaked.txt && git commit -qm "oops"
 gg_err="$("$G" push origin HEAD 2>&1)" && fail "git guard: pushed a commit containing a secret"
@@ -442,6 +460,24 @@ mkdir -p "$TMP/onlysk" && (cd "$TMP/onlysk" && git init -q . && git commit -q --
   && "$ROOT/install.sh" . --only skills >/dev/null) || fail "--only skills failed"
 [[ -f "$TMP/onlysk/.agents/skills/agentloop-ci-fix/SKILL.md" ]] || fail "--only skills: skills missing"
 [[ -e "$TMP/onlysk/run.sh" ]] && fail "--only skills installed run.sh"
+# an untouched skeleton PLAN.md follows the template on --update (so --init
+# still recognises it); a plan someone wrote in is never touched
+mkdir -p "$TMP/skel" && (cd "$TMP/skel" && git init -q . && git commit -q --allow-empty -m init \
+  && "$ROOT/install.sh" . >/dev/null) || fail "skeleton test: install failed"
+cp -R "$ROOT" "$TMP/src3" && printf '%s\n' '' '<!-- a newer skeleton -->' >> "$TMP/src3/template/PLAN.md"
+"$TMP/src3/install.sh" "$TMP/skel" --update >/dev/null || fail "skeleton test: update failed"
+grep -q "a newer skeleton" "$TMP/skel/PLAN.md" || fail "--update did not refresh an untouched skeleton PLAN.md"
+init_out="$(cd "$TMP/skel" && ./run.sh --init "x" 2>&1 || true)"
+echo "$init_out" | grep -q "untouched installer skeleton" || fail "--init no longer recognises the skeleton after --update"
+echo "- [ ] my real item" >> "$TMP/skel/PLAN.md"
+printf '%s\n' '<!-- newer still -->' >> "$TMP/src3/template/PLAN.md"
+"$TMP/src3/install.sh" "$TMP/skel" --update >/dev/null || fail "skeleton test: second update failed"
+grep -q "my real item" "$TMP/skel/PLAN.md" || fail "--update overwrote a PLAN.md someone wrote in"
+grep -q "newer still" "$TMP/skel/PLAN.md" && fail "--update templated over an edited PLAN.md"
+# an agentloop-new copy of a skill (depth 4) is removed by --uninstall too
+mkdir -p "$TMP/skel/.agents/skills/agentloop-testing" && echo x > "$TMP/skel/.agents/skills/agentloop-testing/SKILL.md.agentloop-new"
+"$ROOT/install.sh" "$TMP/skel" --uninstall >/dev/null
+[[ -e "$TMP/skel/.agents/skills/agentloop-testing/SKILL.md.agentloop-new" ]] && fail "--uninstall left a skill's .agentloop-new"
 # an older template without skills (installer from main + --ref <old tag>)
 cp -R "$ROOT" "$TMP/oldsrc" && rm -rf "$TMP/oldsrc/template/.agents"
 mkdir -p "$TMP/oldref" && (cd "$TMP/oldref" && git init -q . && git commit -q --allow-empty -m init)

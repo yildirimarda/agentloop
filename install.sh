@@ -208,7 +208,7 @@ if (( UNINSTALL )); then
   while IFS= read -r nf; do
     [[ -n "$nf" ]] || continue
     if (( DRY )); then note "[dry] remove  ${nf#"$TARGET"/}"; else rm -f "$nf"; note "removed   ${nf#"$TARGET"/}"; fi
-  done < <(find "$TARGET" -maxdepth 3 -name '*.agentloop-new' -not -path "$TARGET/.git/*" 2>/dev/null)
+  done < <(find "$TARGET" -maxdepth 5 -name '*.agentloop-new' -not -path "$TARGET/.git/*" 2>/dev/null)
   if (( DRY )); then note "[dry] remove  .agentloop"; else rm -f "$STAMP"; note "removed   .agentloop"; fi
   # Emptied agentloop-* skill directories go too; .agents/skills and .agents
   # only when nothing of yours is left in them (rmdir refuses non-empty dirs).
@@ -331,6 +331,15 @@ copy_user() {
   if cmp -s "$src" "$dest"; then note "unchanged  $rel"; return; fi
 
   if [[ "$rel" == "PLAN.md" ]]; then
+    # The installer's own skeleton, never edited since the last install, is
+    # still ours: refresh it, so `run.sh --init` keeps recognising it (it
+    # compares PLAN.md with the hash this stamp records). A plan anyone
+    # wrote in is never touched.
+    if (( STAMPED )) && [[ -n "$(stored_hash PLAN.md)" && "$(filehash "$dest")" == "$(stored_hash PLAN.md)" ]]; then
+      (( DRY )) && { note "[dry] update    PLAN.md (untouched installer skeleton)"; return; }
+      cp "$src" "$dest"; note "updated    PLAN.md (it was still the untouched installer skeleton)"
+      return
+    fi
     note "kept yours PLAN.md (your plan is authoritative — never templated over)"
     return
   fi
