@@ -91,8 +91,9 @@ Modes
       --issue N             one-off task from GitHub issue #N (its text and the
                             maintainers' comments); the PR gets "Closes #N"
       --address-review N    the agent works through the review comments on
-                            PR #N, on that PR's branch (also plan PRs: "split
-                            item 3" etc.), then the PR continues as usual
+                            PR #N, on that PR's branch (plan PRs too: "split
+                            item 3"); an automated PR then goes on to CI and
+                            auto-merge, any other comes back to you
       --trust-input         let --issue / --address-review use text from people
                             who are not maintainers (off by default: prompt
                             injection into an agent that can push)
@@ -165,13 +166,17 @@ Per-machine defaults (no git involved): put KEY=VALUE lines in
 ENGINE=claude, CI_RETRIES=5. CLI flags still win.
 
 Examples
+  ./run.sh --doctor                          # can a run start? fix what it flags
   ./run.sh --init "A CLI that validates CSV exports and loads them to Postgres"
   ./run.sh --next
   ./run.sh -n 5
-  ./run.sh -n all --max-growth 20
+  ./run.sh -n all --notify --fallback-models openrouter/a/b,openrouter/c/d
   ./run.sh --task "the rate limiter leaks memory under load, fix it"
+  ./run.sh --issue 42                        # an issue becomes a PR that closes it
+  ./run.sh --address-review 17               # the agent works through your review
   ./run.sh --engine claude --init "..."      # plan with the strong paid model
-  ./run.sh --engine claude --task "hard bug" # paid model for a hard one-off
+  ./run.sh --engine claude -n 3 --max-cost 5 # paid items, capped at $5
+  ./run.sh --stats                           # which model is actually working?
 EOF
 }
 
