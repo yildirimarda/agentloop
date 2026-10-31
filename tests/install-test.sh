@@ -331,6 +331,46 @@ assert d['provider']['openrouter']['options']['setCacheKey'] is True
 " || fail "opencode.json token-budget settings missing"
 grep -q "Output discipline" AGENTS.md || fail "AGENTS.md lacks output-discipline section"
 
+# ── 13a. Git guard: force/delete/main pushes and leaked secrets are refused ──
+mkdir -p "$TMP/gg" && cd "$TMP/gg"
+git init -q --bare remote.git
+git clone -q remote.git work 2>/dev/null && cd work
+git symbolic-ref HEAD refs/heads/main
+git commit -q --allow-empty -m init && git push -q origin main 2>/dev/null
+mkdir -p logs
+(
+  REPO_DIR="$PWD"; GUARD_MOUNT=""
+  eval "$(sed -n '/^write_git_guard()/,/^}$/p' "$TMP/proj/run.sh")"
+  write_git_guard
+  [[ "$GUARD_MOUNT" == "$PWD/logs/.git-guard:/usr/local/sbin/git:ro" ]] || fail "git guard: wrong mount spec: $GUARD_MOUNT"
+) || exit 1
+G="$PWD/logs/.git-guard"
+[[ -x "$G" ]] || fail "git guard: not written/executable"
+refused() { if "$G" "$@" >/dev/null 2>&1; then fail "git guard let through: git $*"; fi; }
+"$G" status >/dev/null || fail "git guard: non-push command not passed through"
+refused push origin main            # on main
+refused push -u origin HEAD         # HEAD is main
+git switch -q -c agent/work && echo ok > f.txt && git add f.txt && git commit -qm work
+refused push --force origin HEAD
+refused push -f origin HEAD
+refused push -uf origin HEAD
+refused push origin +HEAD
+refused push origin HEAD:main
+refused push origin agent/work:refs/heads/master
+refused push origin :agent/work
+refused push --delete origin agent/work
+refused -C "$PWD" push --force origin HEAD
+"$G" push -q -u origin HEAD 2>/dev/null || fail "git guard: refused a normal work-branch push"
+git --git-dir=../remote.git rev-parse -q --verify refs/heads/agent/work >/dev/null || fail "git guard: normal push did not reach the remote"
+export OPENROUTER_API_KEY="sk-or-v1-testsecretvalue0123456789"
+echo "key=$OPENROUTER_API_KEY" > leaked.txt && git add leaked.txt && git commit -qm "oops"
+gg_err="$("$G" push origin HEAD 2>&1)" && fail "git guard: pushed a commit containing a secret"
+echo "$gg_err" | grep -q 'OPENROUTER_API_KEY' || fail "git guard: secret refusal does not name the variable"
+echo "$gg_err" | grep -q 'testsecretvalue'    && fail "git guard: refusal message leaked the secret itself"
+unset OPENROUTER_API_KEY
+"$G" push -q origin HEAD 2>/dev/null || fail "git guard: push refused once the secret is gone from the env"
+cd "$TMP/proj"
+
 # ── 13b'. Item details: indented lines under the next item ───────────────────
 (
   eval "$(sed -n '/^plan_details()/,/^}$/p' run.sh)"
