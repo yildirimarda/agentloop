@@ -432,6 +432,22 @@ case "$ENGINE" in
   *) die "unknown engine: '$ENGINE' (use opencode, claude or codex)" ;;
 esac
 
+# Settings come from flags and from .agentloop.local; validate them up front,
+# or a typo surfaces as an arithmetic error in the middle of a run — after a
+# PR is already open. Booleans also accept true/false, yes/no, on/off.
+for _v in COUNT CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH GRAPH_BUDGET; do
+  [[ "${!_v}" =~ ^[0-9]+$ ]] || die "$_v must be a whole number (got '${!_v}')"
+done
+for _v in AUTO_REPLAN HEADROOM LEARN GIT_GUARD GRAPH_CONTEXT NOTIFY; do
+  case "$(printf '%s' "${!_v}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)  printf -v "$_v" '%s' 1 ;;
+    0|false|no|off) printf -v "$_v" '%s' 0 ;;
+    *) die "$_v must be 1 or 0 (got '${!_v}')" ;;
+  esac
+done
+[[ -z "$MAX_COST" || "$MAX_COST" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+  || die "MAX_COST / --max-cost needs an amount in USD, like 5 or 2.50 (got '$MAX_COST')"
+
 # ── Dry run ──────────────────────────────────────────────────────────────────
 if [[ "$MODE" == "next" ]]; then
   [[ -f "$PLAN" ]] || die "$PLAN not found. Bootstrap it:  ./run.sh --init \"<description>\""
@@ -892,13 +908,14 @@ if [[ "$MODE" == "doctor" ]]; then
     d_head "models (OpenRouter)"
     _m="${MODEL:-$(sed -n 's/^[[:space:]]*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' opencode.json 2>/dev/null | head -1)}"
     _ids=""
-    for _mm in $(printf '%s' "$_m,$FALLBACK_MODELS" | tr ',' ' '); do
+    while IFS= read -r _mm; do
+      _mm="$(printf '%s' "$_mm" | tr -d ' ')"
       case "$_mm" in
-        openrouter/*CHANGE_ME*) : ;;
+        ""|openrouter/*CHANGE_ME*) : ;;
         openrouter/*) _ids="$_ids ${_mm#openrouter/}" ;;
         *) d_info "$_mm — not an OpenRouter model, not checked" ;;
       esac
-    done
+    done <<< "$(printf '%s' "$_m,$FALLBACK_MODELS" | tr ',' '\n')"
     if (( ! _image_ok )); then
       d_info "skipped (needs docker and the image)"
     elif [[ -n "$_ids" ]]; then

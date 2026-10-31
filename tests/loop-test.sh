@@ -760,4 +760,21 @@ run_sh --address-review 1
 [[ "$RC" == 0 ]] || fail "review on an automated PR: exited $RC"
 expect_out "merged — back on main"
 
+# ── 24. Settings are validated before anything runs ──────────────────────────
+new_project settings
+run_sh --ci-retries two
+[[ "$RC" == 1 ]] || fail "a non-numeric --ci-retries must be refused (got $RC)"
+expect_out "CI_RETRIES must be a whole number"
+run_sh --max-cost lots
+[[ "$RC" == 1 ]] || fail "a non-numeric --max-cost must be refused (got $RC)"
+expect_out "needs an amount in USD"
+printf '%s\n' "NOTIFY=yes" "LEARN=off" >> "$PROJ/.agentloop.local"
+run_sh --next
+[[ "$RC" == 0 ]] || fail "boolean words in .agentloop.local were refused"
+printf '%s\n' "GIT_GUARD=maybe" >> "$PROJ/.agentloop.local"
+run_sh --next
+[[ "$RC" == 1 ]] || fail "an invalid boolean must be refused"
+expect_out "GIT_GUARD must be 1 or 0"
+[[ -e "$FAKE_STATE/engine_calls" ]] && fail "settings errors must stop before any session"
+
 echo "loop-test OK"
