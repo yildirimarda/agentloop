@@ -387,6 +387,10 @@ grep -q "Details and acceptance criteria" "$FAKE_STATE/prompt_1.txt" || fail "it
 grep -q -- '- print "hello <name>"' "$FAKE_STATE/prompt_1.txt"      || fail "item detail line missing from the prompt"
 grep -q "Details and acceptance criteria" "$FAKE_STATE/prompt_2.txt" && fail "details leaked into the next item's prompt"
 expect_out '- accept a --name flag'
+# the knowledge graph's answer for the item is in the prompt (asked by bash)
+grep -q "Where to start" "$FAKE_STATE/prompt_1.txt"       || fail "graph context missing from the item prompt"
+grep -q "NODE fake_symbol" "$FAKE_STATE/prompt_1.txt"     || fail "graph excerpt missing from the item prompt"
+grep -q 'graphify query Add the first feature --budget 1200' "$FAKE_STATE/graphify_calls" || fail "graph not queried with the item text"
 
 # ── 2. The agent forgot the label → bash adds "automated", PR still merges ───
 new_project nolabel
@@ -478,6 +482,7 @@ expect_out "merged — back on main"
 [[ "$(on_branch)" == "main" ]] || fail "task mode: not back on main"
 git --git-dir="$FAKE_REMOTE" log --format=%s main | grep -q "feat: work on task-fix-the-typo" \
   || fail "task mode: work did not land on main"
+grep -q "Where to start" "$FAKE_STATE/prompt_1.txt" || fail "task mode: graph context missing from the prompt"
 
 # ── 12. --replan opens a plan-labelled PR and never waits on it ──────────────
 new_project replan
@@ -499,8 +504,10 @@ expect_out "skills:        1 recorded"
 grep -q "/home/agent/.claude/skills" "$FAKE_STATE/docker_mounts" && fail "opencode session got the claude skills mount"
 
 new_project nolearn
-run_sh --no-learn
+run_sh --no-learn --no-graph-context
 grep -q "Do not create or modify skills" "$FAKE_STATE/prompt_1.txt" || fail "--no-learn not reflected in the prompt"
+grep -q "Where to start" "$FAKE_STATE/prompt_1.txt" && fail "--no-graph-context still seeded the prompt"
+grep -q "graphify query" "$FAKE_STATE/graphify_calls" && fail "--no-graph-context still queried the graph"
 
 # ── 14. Claude engine: skills bridged by a read-only mount; cost reported ────
 new_project claude

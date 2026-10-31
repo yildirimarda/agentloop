@@ -27,6 +27,8 @@ SKILLS_ADDED=0
 
 MODEL=""
 USE_GRAPH=1
+GRAPH_CONTEXT=1         # seed item prompts with a knowledge-graph excerpt
+GRAPH_BUDGET=1200       # token budget of that excerpt (graphify query --budget)
 DISCOVER=1
 MAX_GROWTH=10
 AUTO_REPLAN=0
@@ -45,12 +47,14 @@ SKILLS_DIR=".agents/skills"
 #   TIMEOUT_MIN=40           (minutes to wait for a PR merge)
 #   STALL_MIN=45             (kill a session silent this long; 0 = off)
 #   LEARN=0                  (forbid sessions to record project skills)
+#   GRAPH_CONTEXT=0          (don't seed prompts with a graph excerpt)
+#   GRAPH_BUDGET=1200        (token budget of that excerpt)
 # Precedence: CLI flags > this file > committed defaults (opencode.json).
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
   while IFS='=' read -r _k _v; do
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -104,7 +108,9 @@ Options
   -m, --model ID            override the model from opencode.json
                             (OpenRouter: openrouter/vendor/model; NVIDIA NIM:
                             nvidia-nim/vendor/model, keychain entry "nvidia")
-      --no-graph            skip the Graphify index step
+      --no-graph            skip the Graphify index step (and graph context)
+      --no-graph-context    don't seed item prompts with the knowledge graph's
+                            answer for the item (persist: GRAPH_CONTEXT=0)
       --image NAME          container image (default "agent")
   -h, --help                this
 
@@ -150,6 +156,7 @@ while (( $# )); do
     --headroom)     HEADROOM=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
     --no-graph)     USE_GRAPH=0; shift ;;
+    --no-graph-context) GRAPH_CONTEXT=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
     -*)             echo "error: unknown option: $1  (try --help)" >&2; exit 1 ;;
@@ -486,6 +493,32 @@ graph_sync() {
     in_container graphify extract . --code-only --no-cluster --force >/dev/null 2>&1 \
       && info "graph built" || info "graph build failed (continuing without it)"
   fi
+}
+
+# The graph only saves tokens if the model asks it — and many models never do
+# (zero graphify calls is a common sight in session logs). So bash asks once,
+# up front: a local query for the task text (tree-sitter graph: no LLM, no
+# network), clipped, handed to the session as "Where to start". Never fatal:
+# no graph, a graphify without `query`, or no match simply means no section.
+graph_context() {
+  local out
+  (( USE_GRAPH && GRAPH_CONTEXT )) || return 0
+  [[ -f graphify-out/graph.json ]] || return 0
+  out="$(in_container graphify query "$1" --budget "$GRAPH_BUDGET" 2>/dev/null)" || return 0
+  printf '%s\n' "$out" | head -60
+}
+
+# Prompt section for a graph excerpt (nothing when the excerpt is empty).
+graph_section() {
+  [[ -n "${1:-}" ]] || return 0
+  cat <<EOF
+Where to start — the codebase knowledge graph's answer for this task (a
+starting point, not the whole truth: open only the cited files and lines, and
+verify INFERRED edges in the source):
+
+$1
+
+EOF
 }
 
 # Live view: the raw event stream is unreadable NDJSON, so the terminal gets
@@ -1220,6 +1253,7 @@ EOF
     printf '%s\n' "$2" | sed 's/^/    /'
     echo
   fi
+  graph_section "${3:-}"
 cat <<EOF
 Do this:
 
@@ -1308,6 +1342,7 @@ case "$MODE" in
     # Otherwise AGENTS.md's "always create a branch" rule would make a weak
     # model open a SECOND branch/PR instead of updating the existing one —
     # exactly wrong for the "fix CI on this PR" flow.
+    TASK_TEXT="$ARG_TEXT"
     cur_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
     if [[ "$cur_branch" != "main" && "$cur_branch" != "master" ]]; then
       ARG_TEXT="$ARG_TEXT
@@ -1318,11 +1353,18 @@ existing PR updates. The 'create a branch' step in AGENTS.md does not apply."
       info "on branch '$cur_branch' — agent will update the existing PR"
     fi
     graph_sync
+    graphctx="$(graph_context "$TASK_TEXT")"
     if [[ "$cur_branch" == "main" || "$cur_branch" == "master" ]]; then
-      new_work_branch "task" "$ARG_TEXT"
+      new_work_branch "task" "$TASK_TEXT"
     fi
     BRANCH_BASE="$(git rev-parse HEAD 2>/dev/null || true)"
-    run_agent "$ARG_TEXT"; rc=$?
+    task_prompt="$ARG_TEXT"
+    if [[ -n "$graphctx" ]]; then
+      task_prompt="$ARG_TEXT
+
+$(graph_section "$graphctx")"
+    fi
+    run_agent "$task_prompt"; rc=$?
     pr="$(current_pr || true)"
     if [[ -z "$pr" ]] && ! made_commits; then
       echo "  no PR opened, no commits visible — the agent wrote nothing"
@@ -1416,9 +1458,11 @@ for (( i = 1; i <= COUNT; i++ )); do
   rule
 
   graph_sync
+  graphctx="$(graph_context "$item")"
+  [[ -n "$graphctx" ]] && info "graph: prompt seeded with $(printf '%s\n' "$graphctx" | wc -l | tr -d ' ') lines of context"
   new_work_branch "agent" "$item"
   tick_item_on_branch "$item"
-  run_agent "$(prompt_item "$item" "$details")"
+  run_agent "$(prompt_item "$item" "$details" "$graphctx")"
 
   # Verify against GitHub first: a PR for this branch = work definitely
   # happened, whatever the local ref view claims.

@@ -1132,12 +1132,13 @@ keychain entry. Symptom if you forget: the agent's `git push` fails with `403`.
 | `--timeout N` | 45 | CI takes longer than 45 minutes |
 | `-m ID` | from config | Trying a different model for one run |
 | `--no-graph` | off | Graphify is misbehaving |
+| `--no-graph-context` | off | Don't put the graph's answer for the item into the prompt (`GRAPH_CONTEXT=0`) |
 | `--image NAME` | `agent` | You keep multiple container variants |
 
 **Per-machine defaults without touching git:** put `KEY=VALUE` lines in
 `.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
 `ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`,
-`HEADROOM`, `STALL_MIN`, `LEARN`.
+`HEADROOM`, `STALL_MIN`, `LEARN`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`.
 Precedence: CLI flags > `.agentloop.local` > committed defaults
 (`opencode.json`). This is the intended way to switch models freely — the
 committed config stays the team/repo default; your experiments never require
@@ -1301,6 +1302,13 @@ Mechanics, all handled for you:
   put a large JSON diff in every PR and cause merge conflicts.
 - Failures are non-fatal. `run.sh` warns and continues. `--no-graph` skips it
   entirely. It's an optimisation, never a dependency.
+- **Graph-seeded prompts.** Wiring the MCP server up is not enough — plenty of
+  models never call it (a session log with zero `graphify_*` calls is common).
+  So before each session bash asks the graph itself: `graphify query "<item
+  text>" --budget 1200` (local, no LLM) and puts the answer in the prompt
+  under "Where to start". Every engine and every model gets the orientation,
+  whether or not it would have asked. `--no-graph-context` (or
+  `GRAPH_CONTEXT=0`) turns it off; `GRAPH_BUDGET` sizes it.
 
 One caveat: edges marked `INFERRED` are model-generated guesses rather than
 parsed facts. `AGENTS.md` tells the agent to verify those against the real file
