@@ -375,18 +375,41 @@ notify_exit() {
   fi
 }
 
-# Secrets come from the macOS keychain. secret_optional prints nothing when an
-# entry is missing; require_secret assigns into a variable IN THIS SHELL and
-# dies here — a `die` inside "$(...)" would only end the subshell and let the
-# run continue with an empty token.
-secret_optional() {
-  security find-generic-password -s "$1" -w 2>/dev/null || true
+# Secrets come from the macOS keychain; where an entry is missing — or there is
+# no keychain at all (Linux, WSL, CI) — from an environment variable instead.
+# secret_optional prints nothing when neither exists; require_secret assigns
+# into a variable IN THIS SHELL and dies here — a `die` inside "$(...)" would
+# only end the subshell and let the run continue with an empty token.
+secret_env_name() {
+  case "$1" in
+    openrouter)       echo OPENROUTER_API_KEY ;;
+    anthropic)        echo ANTHROPIC_API_KEY ;;
+    codex)            echo CODEX_API_KEY ;;
+    nvidia)           echo NVIDIA_API_KEY ;;
+    gh-agent)         echo AGENTLOOP_GH_AGENT_TOKEN ;;
+    gh-admin)         echo AGENTLOOP_GH_ADMIN_TOKEN ;;
+    agentloop-notify) echo AGENTLOOP_NOTIFY_URL ;;
+  esac
 }
-require_secret() {   # $1 = variable to set, $2 = keychain entry name
-  local _val
+secret_optional() {
+  local _val="" _var
+  if command -v security >/dev/null 2>&1; then
+    _val="$(security find-generic-password -s "$1" -w 2>/dev/null || true)"
+  fi
+  if [[ -z "$_val" ]]; then
+    _var="$(secret_env_name "$1")"
+    # indirection without bash-4 features; _var comes from the fixed table above
+    [[ -n "$_var" ]] && eval "_val=\"\${$_var:-}\""
+  fi
+  printf '%s' "$_val"
+}
+require_secret() {   # $1 = variable to set, $2 = secret name
+  local _val _var
   _val="$(secret_optional "$2")"
-  [[ -n "$_val" ]] || die "keychain entry '$2' not found. Add it with:
-  security add-generic-password -s $2 -a \"\$USER\" -w '<secret>'"
+  _var="$(secret_env_name "$2")"
+  [[ -n "$_val" ]] || die "secret '$2' not found. Add it to the macOS keychain:
+  security add-generic-password -s $2 -a \"\$USER\" -w '<secret>'${_var:+
+or, on Linux / CI, export $_var}"
   printf -v "$1" '%s' "$_val"
 }
 
@@ -677,8 +700,8 @@ if [[ "$MODE" == "doctor" ]]; then
   fi
   if command -v jq >/dev/null 2>&1; then d_ok "jq (live view, session summaries, history metrics)"
   else d_warn "jq not found — the live view, session summaries and history metrics need it (brew install jq)"; fi
-  if command -v security >/dev/null 2>&1; then d_ok "secrets: macOS keychain"
-  else d_fail "no macOS keychain ('security') — run.sh reads its secrets from it"; fi
+  if command -v security >/dev/null 2>&1; then d_ok "secrets: macOS keychain (environment variables as fallback)"
+  else d_info "secrets: environment variables (no macOS keychain on this host)"; fi
 
   d_head "repository"
   if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -768,7 +791,7 @@ if [[ "$MODE" == "doctor" ]]; then
   esac
   for _s in gh-agent $_need; do
     if [[ -n "$(secret_optional "$_s")" ]]; then d_ok "secret '$_s'"
-    else d_fail "secret '$_s' missing — security add-generic-password -s $_s -a \"\$USER\" -w '<secret>'"; fi
+    else d_fail "secret '$_s' missing — security add-generic-password -s $_s -a \"\$USER\" -w '<secret>' (or export $(secret_env_name "$_s"))"; fi
   done
   if [[ -n "$(secret_optional gh-admin)" ]]; then d_ok "secret 'gh-admin' (for --github-setup)"
   else d_info "no 'gh-admin' secret — only ./run.sh --github-setup needs it"; fi

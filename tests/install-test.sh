@@ -285,7 +285,7 @@ cd "$TMP/proj"
 # (a die inside "$(...)" only ends the subshell and the run went on with an
 # empty token), and a present one is assigned without a subshell.
 rs_out="$(
-  eval "$(sed -n '/^die()/p;/^secret_optional()/,/^}$/p;/^require_secret()/,/^}$/p' run.sh)"
+  eval "$(sed -n '/^die()/p;/^secret_env_name()/,/^}$/p;/^secret_optional()/,/^}$/p;/^require_secret()/,/^}$/p' run.sh)"
   security() { [[ "$3" == "present" ]] && echo "s3cret" || return 44; }
   require_secret GOT present
   echo "got=$GOT"
