@@ -264,6 +264,7 @@ grep -q "agentloop.run" run.sh       || fail "run.sh does not label its containe
 mkdir -p "$TMP/kb" && cd "$TMP/kb"
 git init -q -b main . && git commit -q --allow-empty -m init
 git switch -q -c agent/demo && echo x > f.txt && git add f.txt && git commit -q -m work && echo y > dirty.txt
+# shellcheck disable=SC2034  # read by the eval'd keep_branch_and_return
 BASE_BRANCH=main
 eval "$(sed -n '/^keep_branch_and_return()/,/^}$/p' "$TMP/proj/run.sh")"
 kb_out="$(keep_branch_and_return "CI failing" 7)"
