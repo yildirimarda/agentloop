@@ -1226,6 +1226,9 @@ keeps going empty is easy to spot and drop.
 | `--timeout N` | 45 | CI takes longer than 45 minutes |
 | `-m ID` | from config | Trying a different model for one run |
 | `--fallback-models A,B` | none | Free endpoints churn and rate-limit. When a session yields nothing (no commits, no PR), the item is redone with the next model, which then stays for the rest of the run (`FALLBACK_MODELS=` in `.agentloop.local`) |
+| `--verify CMD` | off | Local gate: after each session `CMD` runs in the container; a red result gets ONE fix session (output clipped like CI logs) before the PR goes to CI; still red = CI decides (`VERIFY_CMD=...`) |
+| `--review MODEL` | off | A second model reviews each PR diff before the `automated` label: it may push `review:` fixes or flag the PR `blocked` (`REVIEW_MODEL=...`) |
+| `--watch MIN` | 0 (off) | With an empty plan, poll the default branch every MIN minutes and continue when items land; `./run.sh --stop` ends it (`WATCH_MIN=...`) |
 | `--no-graph` | off | Graphify is misbehaving |
 | `--no-graph-context` | off | Don't put the graph's answer for the item into the prompt (`GRAPH_CONTEXT=0`) |
 | `--image NAME` | `agent` | You keep multiple container variants |
@@ -1234,7 +1237,9 @@ keeps going empty is easy to spot and drop.
 `.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
 `ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`,
 `HEADROOM`, `STALL_MIN`, `LEARN`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
-`GIT_GUARD`, `FALLBACK_MODELS`, `MAX_COST`, `NOTIFY`.
+`GIT_GUARD`, `FALLBACK_MODELS`, `MAX_COST`, `BASE_BRANCH`, `VERIFY_CMD`,
+`REVIEW_MODEL`, `WATCH_MIN`, `NOTIFY`. `BASE_BRANCH` is normally detected
+from `origin/HEAD` (master, trunk… work out of the box).
 Precedence: CLI flags > `.agentloop.local` > committed defaults
 (`opencode.json`). This is the intended way to switch models freely — the
 committed config stays the team/repo default; your experiments never require

@@ -16,6 +16,9 @@
     · details:   lines indented two spaces right under an item — constraints,
                  edge cases, acceptance criteria. The session doing the item
                  receives them; a blank line ends them.
+    · routing:   a detail line "engine: claude" and/or "model: vendor/x"
+                 runs that one item on another engine/model (it is not shown
+                 to the session). Needs that engine's keychain entry.
 
   Writing good items is the highest-leverage thing you do here:
     · One pull request per item. If it needs two PRs, split it.
