@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.17.0](https://github.com/yildirimarda/agentloop/compare/v0.16.1...v0.17.0) (2026-11-01)
+
+
+### Features
+
+* --fallback-models — switch models when a session yields nothing ([1635c9d](https://github.com/yildirimarda/agentloop/commit/1635c9d717ddc0e5effaaf613358d30b12a414e7))
+* --issue N and --address-review N — GitHub issues and PR reviews as agent input ([f655b34](https://github.com/yildirimarda/agentloop/commit/f655b345d8980cddcdaef5cc64fcdf0beb055cd0))
+* ./run.sh --doctor health check and ./run.sh --build with stale-image detection ([6d16c8e](https://github.com/yildirimarda/agentloop/commit/6d16c8e928c90bcf1f852d8c377130c936caf3ed))
+* detect the default branch instead of hardcoding main (run.sh, git guard, setup-github.sh) ([abbd1f7](https://github.com/yildirimarda/agentloop/commit/abbd1f7d3ba2dc75c579ca6b8317fec293bfca90))
+* engine-independent git guard — no force pushes, no pushes to main, no leaked secrets ([e33b055](https://github.com/yildirimarda/agentloop/commit/e33b055b8c44702f91c9779cc0a53c40125d694b))
+* graph-seeded prompts — bash asks the knowledge graph so every model starts oriented ([2ba41e4](https://github.com/yildirimarda/agentloop/commit/2ba41e4c912a2ec93354f802ae5b7d496955387e))
+* item details — indented lines under a PLAN.md item reach its session as acceptance criteria ([35449ed](https://github.com/yildirimarda/agentloop/commit/35449ed818a779d823f6c7781cd4e7f0ffc24684))
+* portable agent skills for every engine, and sessions that record what they learn ([52da406](https://github.com/yildirimarda/agentloop/commit/52da4062fe793fc612856a71096605958909a3c9))
+* richer live view — Claude tool inputs, MCP status, thinking and failures; skill loads ([0a4058f](https://github.com/yildirimarda/agentloop/commit/0a4058feec61da13e7db062ddc65a2dfe84eeeff))
+* run history with --stats, graceful --stop, --max-cost budget and --notify ([d44717e](https://github.com/yildirimarda/agentloop/commit/d44717ea3cf8023bae7ff4676fe6cb34042871f9))
+* secrets from environment variables where the macOS keychain is missing (Linux, WSL, CI) ([1c633db](https://github.com/yildirimarda/agentloop/commit/1c633db251590d475ed90ab00d8e008ddf9b8967))
+* verify gate, --review, --watch, per-item engine/model routing, and PRs opened from bash for orphaned commits ([382a08a](https://github.com/yildirimarda/agentloop/commit/382a08aae564e07e76e80f0879553b0e042aa265))
+
+
+### Bug Fixes
+
+* close git-guard bypasses and harden the loop after an independent review ([126baaa](https://github.com/yildirimarda/agentloop/commit/126baaac553f00b49fb9942ca6ec9caec7bbcd19))
+* judge sessions on an existing PR by its head on GitHub; fresh fixes count per item ([e63e6de](https://github.com/yildirimarda/agentloop/commit/e63e6deb0f104c3e376991b64fc43eba5495cbfe))
+* report empty sessions correctly and exit 0 when a run finishes the plan ([ce6afcb](https://github.com/yildirimarda/agentloop/commit/ce6afcb48a9c1e4d4e8c12f866e037f18e9fe041))
+* restore deterministic PR labelling, stop at once on blocked PRs, report failed branch protection ([60bb45c](https://github.com/yildirimarda/agentloop/commit/60bb45c2c029c8ea5ebe7a1a4341ea86eb7afe99))
+* stop the run when a required secret is missing; portable temp files ([f613e25](https://github.com/yildirimarda/agentloop/commit/f613e25c1eef0a1ae9d4e4a923e1c973a01ee197))
+* validate numeric and boolean settings before a run starts ([8e4d8ab](https://github.com/yildirimarda/agentloop/commit/8e4d8ab8f6f813bf4c8fc820f773d06d69dca3a8))
+
 ## [0.16.1](https://github.com/yildirimarda/agentloop/compare/v0.16.0...v0.16.1) (2026-10-30)
 
 
