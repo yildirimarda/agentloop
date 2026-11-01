@@ -172,7 +172,7 @@ merge_pr() {   # what auto-merge + delete-branch-on-merge do on GitHub
   local b sha
   b="$(cat "$S/pr/$1/branch")"
   sha="$(head_sha "$b")" || return 1
-  git --git-dir="$FAKE_REMOTE" update-ref refs/heads/main "$sha"
+  git --git-dir="$FAKE_REMOTE" update-ref "refs/heads/${FAKE_BASE:-main}" "$sha"
   git --git-dir="$FAKE_REMOTE" update-ref -d "refs/heads/$b"
   echo MERGED > "$S/pr/$1/state"
 }
@@ -374,18 +374,19 @@ ln -s opencode "$STUBS/codex"
 
 # ── A project wired to a fake GitHub ─────────────────────────────────────────
 # new_project NAME — bare remote + clone with agentloop installed and pushed.
-new_project() {
-  local name="$1"
+new_project() {   # new_project NAME [DEFAULT_BRANCH]
+  local name="$1" base="${2:-main}"
+  export FAKE_BASE="$base"
   [[ ! -e "$TMP/$name" ]] || fail "new_project: the name '$name' is used twice in this file"
   export FAKE_STATE="$TMP/$name/state" FAKE_REMOTE="$TMP/$name/remote.git"
   PROJ="$TMP/$name/proj"
   mkdir -p "$FAKE_STATE"
   git init -q --bare "$FAKE_REMOTE"
-  git --git-dir="$FAKE_REMOTE" symbolic-ref HEAD refs/heads/main
+  git --git-dir="$FAKE_REMOTE" symbolic-ref HEAD "refs/heads/$base"
   git clone -q "$FAKE_REMOTE" "$PROJ" 2>/dev/null
   (
     cd "$PROJ"
-    git symbolic-ref HEAD refs/heads/main
+    git symbolic-ref HEAD "refs/heads/$base"
     "$ROOT/install.sh" . >/dev/null
     cat > PLAN.md <<'PLAN'
 # Plan
@@ -400,7 +401,8 @@ new_project() {
 ## Discovered
 PLAN
     printf '%s\n' "STALL_MIN=0" "TIMEOUT_MIN=1" > .agentloop.local
-    git add -A && git commit -qm "chore: install agentloop" && git push -q -u origin main 2>/dev/null
+    git add -A && git commit -qm "chore: install agentloop" && git push -q -u origin "$base" 2>/dev/null
+    git remote set-head origin "$base" >/dev/null 2>&1 || true
   )
   unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN \
         FAKE_STOP_DURING FAKE_REVIEW_REPLY
@@ -416,7 +418,7 @@ run_sh() {
   RC=$?
   set -e
 }
-remote_plan() { git --git-dir="$FAKE_REMOTE" show main:PLAN.md; }
+remote_plan() { git --git-dir="$FAKE_REMOTE" show "${FAKE_BASE:-main}:PLAN.md"; }
 on_branch()   { git -C "$PROJ" rev-parse --abbrev-ref HEAD; }
 expect_out()  { grep -qF -- "$1" "$OUT" || fail "${2:-expected output}: '$1'"; }
 reject_out()  { grep -qF -- "$1" "$OUT" && fail "${2:-unexpected output}: '$1'"; return 0; }
@@ -839,5 +841,24 @@ run_sh --next
 [[ "$RC" == 1 ]] || fail "an invalid boolean must be refused"
 expect_out "GIT_GUARD must be 1 or 0"
 [[ -e "$FAKE_STATE/engine_calls" ]] && fail "settings errors must stop before any session"
+
+# ── 25. A repository whose default branch is master ──────────────────────────
+new_project master-repo master
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "master repo: exited $RC"
+[[ "$(on_branch)" == "master" ]] || fail "master repo: not back on master (on $(on_branch))"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "master repo: tick did not land on master"
+grep -q 'GUARD_BASE=master' "$PROJ/logs/.git-guard" || fail "git guard does not know the default branch"
+# a default branch with another name, set in .agentloop.local
+new_project trunk-repo trunk
+printf '%s\n' "BASE_BRANCH=trunk" >> "$PROJ/.agentloop.local"
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "trunk repo: exited $RC"
+[[ "$(on_branch)" == "trunk" ]] || fail "trunk repo: not back on trunk"
+grep -q 'GUARD_BASE=trunk' "$PROJ/logs/.git-guard" || fail "git guard: GUARD_BASE not trunk"
+# the guard refuses a push to that branch
+( cd "$PROJ" && git switch -q -c scratch && git commit -q --allow-empty -m x \
+  && ! logs/.git-guard push origin HEAD:trunk 2>"$TMP/guard.err" ) || fail "guard allowed a push to trunk"
+grep -q "not allowed" "$TMP/guard.err" || fail "guard did not explain the trunk refusal"
 
 echo "loop-test OK"
