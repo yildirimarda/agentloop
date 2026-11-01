@@ -39,6 +39,9 @@ LEARN=1                 # sessions may record project skills in .agents/skills/
 GIT_GUARD=1             # in-container `git push` guard (see write_git_guard)
 BASE_BRANCH=""           # default branch; empty = detect from origin/HEAD
 MAX_COST=""             # USD budget for one run (engines that report cost)
+VERIFY_CMD=""            # local gate run in the container after a session (one fix session if red)
+REVIEW_MODEL=""          # a second model reviews every PR before it can auto-merge
+WATCH_MIN=0              # with an empty plan: poll the default branch every N minutes
 NOTIFY=0                # notify (macOS banner / webhook) when a long run ends
 HISTORY="logs/history.tsv"
 ISSUE_NUM=""            # --issue N
@@ -65,6 +68,9 @@ SKILLS_MOUNT="" GUARD_MOUNT=""
 #   FALLBACK_MODELS=a/b,c/d  (models to switch to when a session yields nothing)
 #   BASE_BRANCH=trunk        (default branch; normally detected from origin/HEAD)
 #   MAX_COST=5               (stop a run once engines report $5 spent)
+#   VERIFY_CMD="make test"   (local gate; red = one fix session before CI)
+#   REVIEW_MODEL=vendor/x    (a second model reviews each PR before automerge)
+#   WATCH_MIN=10             (empty plan: poll for new items every 10 minutes)
 #   NOTIFY=1                 (notify when a run stops or finishes)
 # Precedence: CLI flags > this file > committed defaults (opencode.json).
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
@@ -73,7 +79,7 @@ if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
     # tolerate CRLF files and stray spaces around values
     _v="${_v%$'\r'}"; _v="${_v%"${_v##*[![:space:]]}"}"; _v="${_v#"${_v%%[![:space:]]*}"}"
     case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS|MAX_COST|BASE_BRANCH|NOTIFY)
+      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS|MAX_COST|BASE_BRANCH|VERIFY_CMD|REVIEW_MODEL|WATCH_MIN|NOTIFY)
         printf -v "$_k" '%s' "$_v" ;;
     esac
   done < "$REPO_DIR/.agentloop.local"
@@ -157,6 +163,16 @@ Options
                             endpoint, a stall), redo the item with the next
                             model and keep it for the rest of the run
                             (persist: FALLBACK_MODELS=... in .agentloop.local)
+      --verify CMD          local gate: after each session CMD runs in the
+                            container; red gets ONE fix session (output
+                            clipped like CI logs) before the PR goes to CI
+                            (persist: VERIFY_CMD=... in .agentloop.local)
+      --review MODEL        a second model reviews each PR's diff, may push
+                            fixes or flag it "blocked", before the PR is
+                            labelled for auto-merge (persist: REVIEW_MODEL)
+      --watch MIN           when the plan is empty, poll the default branch
+                            every MIN minutes and continue as soon as new
+                            items land; --stop ends it (persist: WATCH_MIN)
       --no-graph            skip the Graphify index step (and graph context)
       --no-graph-context    don't seed item prompts with the knowledge graph's
                             answer for the item (persist: GRAPH_CONTEXT=0)
@@ -214,6 +230,9 @@ while (( $# )); do
     --auto-replan)  AUTO_REPLAN=1; shift ;;
     --max-cost)     MAX_COST="${2:?--max-cost needs an amount in USD}"; shift 2 ;;
     --notify)       NOTIFY=1; shift ;;
+    --verify)       VERIFY_CMD="${2:?--verify needs a shell command}"; shift 2 ;;
+    --review)       REVIEW_MODEL="${2:?--review needs a model id}"; shift 2 ;;
+    --watch)        WATCH_MIN="${2:?--watch needs minutes between polls}"; shift 2 ;;
     --ambitious)    AMBITIOUS=1; shift ;;
     --headroom)     HEADROOM=1; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
@@ -447,7 +466,7 @@ esac
 # Settings come from flags and from .agentloop.local; validate them up front,
 # or a typo surfaces as an arithmetic error in the middle of a run — after a
 # PR is already open. Booleans also accept true/false, yes/no, on/off.
-for _v in COUNT CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH GRAPH_BUDGET; do
+for _v in COUNT CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH GRAPH_BUDGET WATCH_MIN; do
   # no leading zeros: bash arithmetic reads 08 as a (broken) octal number
   [[ "${!_v}" =~ ^(0|[1-9][0-9]*)$ ]] || die "$_v must be a whole number (got '${!_v}')"
 done
@@ -1453,6 +1472,48 @@ use_fallback_model() {
 current_pr()   { gh_c pr view --json number -q .number 2>/dev/null; }
 pr_labels()    { gh_c pr view "$1" --json labels -q '.labels[].name' 2>/dev/null || true; }
 
+# ── Per-item routing ──────────────────────────────────────────────────────────
+# Detail lines under a plan item can pick the engine and/or model for that
+# item alone ("engine: claude", "model: vendor/x"): hard items to a stronger
+# model, cheap ones to a free one. The lines are removed from the criteria
+# the session sees. The routing is undone before the next item.
+detail_value() {   # $1 key, $2 details text -> value of the first "key: value" line
+  printf '%s\n' "$2" | awk -v k="$1" '{
+    l = tolower($0)
+    if (match(l, "^[ \t]*(-[ \t]+)?" k "[ \t]*:[ \t]*")) { v = substr($0, RLENGTH + 1); gsub(/[ \t\r]+$/, "", v); print v; exit }
+  }'
+}
+strip_route_lines() { printf '%s\n' "$1" | grep -viE '^[[:space:]]*(-[[:space:]]+)?(engine|model)[[:space:]]*:' || true; }
+ROUTED=0; ROUTE_ENGINE=""; ROUTE_MODEL=""
+engine_secrets() {   # make sure the credentials of an engine are loaded
+  case "$1" in
+    claude) [[ -n "$ANTHROPIC_KEY" ]] || require_secret ANTHROPIC_KEY anthropic ;;
+    codex)  [[ -n "$CODEX_KEY" ]] || require_secret CODEX_KEY codex ;;
+    *)      [[ -n "$OPENROUTER_KEY" || -n "$NVIDIA_KEY" ]] || require_secret OPENROUTER_KEY openrouter ;;
+  esac
+}
+route_apply() {
+  local e m
+  e="$(detail_value engine "$1")"; m="$(detail_value model "$1")"
+  [[ -n "$e$m" ]] || return 0
+  case "$e" in
+    ""|opencode|claude|codex) : ;;
+    *) info "routing: unknown engine '$e' on this item — ignored"; e="" ;;
+  esac
+  [[ -n "$e$m" ]] || return 0
+  ROUTE_ENGINE="$ENGINE"; ROUTE_MODEL="$MODEL"; ROUTED=1
+  if [[ -n "$e" && "$e" != "$ENGINE" ]]; then
+    ENGINE="$e"; MODEL=""          # the old model id means nothing to another engine
+    engine_secrets "$ENGINE"
+  fi
+  [[ -n "$m" ]] && MODEL="$m"
+  info "routing: this item runs on $ENGINE${MODEL:+ · $MODEL}"
+}
+route_restore() {
+  (( ROUTED )) || return 0
+  ENGINE="$ROUTE_ENGINE"; MODEL="$ROUTE_MODEL"; ROUTED=0
+}
+
 # Labels decide what GitHub does next — automerge acts only on "automated" and
 # skips "blocked" and "plan" — so bash sets them instead of trusting the model
 # to remember. Returns 1 when the agent asked for a human ("blocked", or
@@ -1815,6 +1876,104 @@ await_merge_and_autofix() {
     faillog="$(ci_fail_log "$pr")"
     run_agent "$(prompt_ci_fix "$desc" "$pr" "${faillog:-<log unavailable — reproduce locally>}")"
   done
+}
+
+prompt_verify_fix() {
+cat <<EOF
+The project's local verification command failed after your work on this plan
+item:
+
+    $1
+
+You are already on the work branch. Stay on it; do not touch $BASE_BRANCH and do
+not edit PLAN.md. Do this:
+
+1. Read the output below and fix the CODE. Never weaken, skip or delete tests
+   to get green.
+2. Re-run the command until it passes:  $2
+3. Commit. If a pull request is already open for this branch, push to it;
+   otherwise just commit — the loop pushes and opens the PR.
+4. Stop. Do not merge, do not start anything else.
+
+--- OUTPUT (tail) ---
+$3
+--- END OUTPUT ---
+EOF
+}
+
+# The local gate: cheaper than a CI round trip. One fix session, then CI decides.
+verify_gate() {
+  [[ -n "$VERIFY_CMD" ]] || return 0
+  local out rc fixes=0
+  while :; do
+    info "verify: $VERIFY_CMD"
+    if out="$(in_container bash -lc "$VERIFY_CMD" 2>&1)"; then rc=0; else rc=$?; fi
+    if (( rc == 0 )); then info "verify: passed"; return 0; fi
+    out="$(printf '%s\n' "$out" | tail -n 120 | cut -c1-400)"
+    if (( fixes >= 1 )); then
+      info "verify: still failing after the fix session — CI will decide"
+      return 0
+    fi
+    fixes=1
+    echo
+    rule
+    echo "verify failed (exit $rc) — one local fix session"
+    rule
+    run_agent "$(prompt_verify_fix "$1" "$VERIFY_CMD" "${out:-<no output>}")"
+  done
+}
+
+prompt_pr_review() {
+cat <<EOF
+You are the REVIEWER of pull request #$2, not its author. It implements this
+plan item:
+
+    $1
+
+You are on the PR's branch. Stay on it; do not create a branch, do not merge,
+do not touch $BASE_BRANCH, do not edit PLAN.md. Do this:
+
+1. Read the change:  git diff origin/$BASE_BRANCH...HEAD
+2. Check it against the item: does it do what was asked, are the tests real
+   (not weakened, skipped or deleted), is there anything unrelated, any secret,
+   any obvious bug or missing edge case?
+3. Small problems: fix them, commit with a "review:" message and push to this
+   branch — the PR updates itself.
+4. A problem that needs a human decision: run  gh pr edit $2 --add-label blocked
+   and explain it with  gh pr comment $2 --body "..."  — then stop.
+5. Nothing wrong: stop without changing anything.
+EOF
+}
+
+# A second model looks at the PR before the "automated" label lets it merge.
+review_session() {
+  [[ -n "$REVIEW_MODEL" ]] || return 0
+  local saved="$MODEL" saved_fb="$FALLBACK_LEFT"
+  echo
+  rule
+  echo "review of PR #$1 by $REVIEW_MODEL"
+  rule
+  MODEL="$REVIEW_MODEL"; FALLBACK_LEFT=""
+  run_agent "$(prompt_pr_review "$2" "$1")"
+  MODEL="$saved"; FALLBACK_LEFT="$saved_fb"
+}
+
+# The session committed but never opened a PR: do it from bash, flagged
+# "blocked" because nobody vouched for the PR body — a human takes a look.
+# Returns 0 and sets the PR via current_pr on success.
+open_pr_from_bash() {
+  local br title
+  br="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [[ -n "$br" && "$br" != "$BASE_BRANCH" && "$br" != "HEAD" ]] || return 1
+  in_container git push -q -u origin HEAD >/dev/null 2>&1 || return 1
+  title="feat: ${1:0:70}"
+  if ! gh_c pr create --base "$BASE_BRANCH" --head "$br" --title "$title" --label blocked \
+        --body "Opened by run.sh: the session committed this work but did not open a pull request. Labelled blocked so a human looks before it merges." >/dev/null 2>&1; then
+    gh_c pr create --base "$BASE_BRANCH" --head "$br" --title "$title" \
+      --body "Opened by run.sh: the session committed this work but did not open a pull request." >/dev/null 2>&1 || return 1
+    gh_c pr edit "$(current_pr)" --add-label blocked >/dev/null 2>&1 || true
+  fi
+  [[ -n "$(current_pr || true)" ]]
 }
 
 # Show the "- [ ]" lines that appeared in PLAN.md during this iteration.
@@ -2444,7 +2603,23 @@ budget_reached() {   # spent something, and at least the budget
   [[ -n "$MAX_COST" ]] && awk -v a="$RUN_COST" -v b="$MAX_COST" 'BEGIN { exit !(a + 0 > 0 && a + 0 >= b + 0) }'
 }
 
+# --watch: with the plan empty, poll the default branch until items land.
+# Returns 0 when there is work again, 1 on --stop. Ctrl+C ends it as usual.
+watch_for_items() {
+  info "--watch: polling $BASE_BRANCH every ${WATCH_MIN}m for new items (./run.sh --stop to end)"
+  while :; do
+    if [[ -f "$STOP_FILE" ]]; then
+      rm -f "$STOP_FILE"; echo "stop requested (./run.sh --stop) — ending the watch."; return 1
+    fi
+    sleep $(( WATCH_MIN * ${AGENTLOOP_SLEEP_UNIT:-60} ))
+    git switch "$BASE_BRANCH" --quiet 2>/dev/null || true
+    git_pull_c
+    if [[ "$(plan_remaining)" -gt 0 ]]; then info "--watch: new items landed"; return 0; fi
+  done
+}
+
 for (( i = 1; i <= COUNT; i++ )); do
+  route_restore
   # Between items: honour ./run.sh --stop and the --max-cost budget.
   if (( i > 1 )); then
     if [[ -f "$STOP_FILE" ]]; then
@@ -2478,7 +2653,10 @@ for (( i = 1; i <= COUNT; i++ )); do
       echo "every item and its status, via a 'plan'-labelled PR you review."
     else
       echo "PLAN.md is complete — nothing left to do."
-      if (( AUTO_REPLAN )); then
+      if (( WATCH_MIN > 0 )); then
+        if watch_for_items; then i=$((i - 1)); continue; fi
+        break
+      elif (( AUTO_REPLAN )); then
         echo "--auto-replan: having the agent propose the next wave..."
         echo
         do_replan
@@ -2494,6 +2672,9 @@ for (( i = 1; i <= COUNT; i++ )); do
 
   item="$(plan_next)"
   details="$(plan_details)"
+  route_restore
+  route_apply "$details"
+  details="$(strip_route_lines "$details")"
   echo
   rule
   printf 'TASK %d/%s   ·   %s remaining\n' "$i" \
@@ -2513,7 +2694,11 @@ for (( i = 1; i <= COUNT; i++ )); do
     # Verify against GitHub first: a PR for this branch = work definitely
     # happened, whatever the local ref view claims.
     pr="$(current_pr || true)"
-    if [[ -n "$pr" ]] || made_commits; then break; fi
+    if [[ -n "$pr" ]] || made_commits; then
+      verify_gate "$item"
+      pr="$(current_pr || true)"
+      break
+    fi
     use_fallback_model || break
     abandon_work_branch
   done
@@ -2528,15 +2713,21 @@ for (( i = 1; i <= COUNT; i++ )); do
       ITEM_OUTCOME="no-pr"; STOP_REASON="a session produced no commits and no PR ('$item')"
       exit 1
     fi
-    echo
-    echo "STOPPING: commits exist but no pull request was opened."
-    keep_branch_and_return "no PR was opened"
-    echo "  To retry: push the branch and open the PR yourself, or delete it and re-run."
-    ITEM_OUTCOME="no-pr-commits"; STOP_REASON="commits but no pull request ('$item')"
-    exit 1
+    if open_pr_from_bash "$item"; then
+      pr="$(current_pr || true)"
+      info "the session opened no PR — pushed and opened #$pr from bash, labelled 'blocked'"
+    else
+      echo
+      echo "STOPPING: commits exist but no pull request was opened (and pushing from here failed)."
+      keep_branch_and_return "no PR was opened"
+      echo "  To retry: push the branch and open the PR yourself, or delete it and re-run."
+      ITEM_OUTCOME="no-pr-commits"; STOP_REASON="commits but no pull request ('$item')"
+      exit 1
+    fi
   fi
   info "PR #$pr opened"
   ITEM_PR="$pr"
+  review_session "$pr" "$item"
   if ! ensure_automerge_label "$pr"; then
     ITEM_OUTCOME="blocked"; STOP_REASON="PR #$pr is labelled '$PR_FLAG' — it needs you"
     if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi

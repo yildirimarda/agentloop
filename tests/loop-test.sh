@@ -96,6 +96,11 @@ STUB
 
 cat > "$STUBS/sleep" <<'STUB'
 #!/usr/bin/env bash
+# no real waiting; a test can leave a one-shot hook that runs "while the loop sleeps"
+echo "$*" >> "${FAKE_STATE:-/dev/null}/sleeps"
+if [[ -x "${FAKE_STATE:-/nonexistent}/on_sleep" ]]; then
+  hook="$FAKE_STATE/on_sleep"; mv "$hook" "$hook.done"; "$hook.done"; [[ $? == 3 ]] && mv "$hook.done" "$hook"
+fi
 exit 0
 STUB
 
@@ -320,6 +325,25 @@ if grep -q "CI failed on pull request" <<<"$prompt"; then
   tool "git push"; finish 700
   exit 0
 fi
+if grep -q "local verification command failed" <<<"$prompt"; then
+  echo "verified" >> verify-ok.txt
+  git add verify-ok.txt && git commit -qm "fix: make verification green"
+  git push -q origin HEAD 2>/dev/null || true
+  tool "git commit"; finish 650
+  exit 0
+fi
+if grep -q "REVIEWER of pull request" <<<"$prompt"; then
+  pr_n="$(grep -o 'pull request #[0-9]*' <<<"$prompt" | head -1 | tr -dc 0-9)"
+  if [[ "${FAKE_REVIEW_BLOCK:-0}" == 1 ]]; then
+    gh pr edit "$pr_n" --add-label blocked >/dev/null; tool "gh pr edit --add-label blocked"
+  else
+    echo "reviewed" >> review-ok.txt
+    git add review-ok.txt && git commit -qm "review: tighten" && git push -q origin HEAD 2>/dev/null
+    tool "git push"
+  fi
+  finish 400
+  exit 0
+fi
 if grep -q "Address the review feedback" <<<"$prompt"; then
   if [[ "${FAKE_REVIEW_REPLY:-0}" == 1 ]]; then   # disagrees: answers with a PR comment
     echo $(( $(cat "$FAKE_STATE/comment_count" 2>/dev/null || echo 0) + 1 )) > "$FAKE_STATE/comment_count"
@@ -405,7 +429,7 @@ PLAN
     git remote set-head origin "$base" >/dev/null 2>&1 || true
   )
   unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN \
-        FAKE_STOP_DURING FAKE_REVIEW_REPLY
+        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK
 }
 # outcome column of the last history row
 last_outcome() { tail -1 "$PROJ/logs/history.tsv" | cut -f5; }
@@ -860,5 +884,94 @@ grep -q 'GUARD_BASE=trunk' "$PROJ/logs/.git-guard" || fail "git guard: GUARD_BAS
 ( cd "$PROJ" && git switch -q -c scratch && git commit -q --allow-empty -m x \
   && ! logs/.git-guard push origin HEAD:trunk 2>"$TMP/guard.err" ) || fail "guard allowed a push to trunk"
 grep -q "not allowed" "$TMP/guard.err" || fail "guard did not explain the trunk refusal"
+
+# ── 26. VERIFY_CMD: red → one fix session → green; still red → CI decides ────
+new_project verify-fix
+printf '%s\n' "VERIFY_CMD=test -f verify-ok.txt" >> "$PROJ/.agentloop.local"
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "verify: exited $RC"
+expect_out "verify failed (exit 1)"
+expect_out "verify: passed"
+[[ "$(wc -l < "$FAKE_STATE/engine_calls" | tr -d ' ')" == 2 ]] || fail "verify: expected the item session plus one fix session"
+grep -q "local verification command failed" "$FAKE_STATE/prompt_2.txt" || fail "verify: fix prompt missing"
+new_project verify-red
+run_sh -n 1 --verify "echo boom-output; false"
+[[ "$RC" == 0 ]] || fail "verify-red: exited $RC (CI decides, the run goes on)"
+expect_out "still failing after the fix session"
+grep -q "boom-output" "$FAKE_STATE/prompt_2.txt" || fail "verify: command output not in the fix prompt"
+[[ "$(wc -l < "$FAKE_STATE/engine_calls" | tr -d ' ')" == 2 ]] || fail "verify-red: more than one fix session ran"
+new_project verify-green
+run_sh -n 1 --verify "true"
+[[ "$(wc -l < "$FAKE_STATE/engine_calls" | tr -d ' ')" == 1 ]] || fail "verify green must not start a fix session"
+
+# ── 27. Commits but no PR: pushed and opened from bash, flagged blocked ──────
+new_project open-pr
+export FAKE_NO_PR=1
+run_sh -n 1
+unset FAKE_NO_PR
+[[ "$RC" == 1 ]] || fail "open-pr: expected the loop to stop on the blocked PR (got $RC)"
+expect_out "pushed and opened #1 from bash"
+grep -qx blocked "$FAKE_STATE/gh/pr/1/labels" || fail "open-pr: PR not labelled blocked"
+[[ "$(last_outcome)" == "blocked" ]] || fail "open-pr: history outcome is '$(last_outcome)'"
+
+# ── 28. --review: a second model reviews before the label lets it merge ──────
+new_project review-ok
+run_sh -n 1 -m vendor/author --review vendor/reviewer
+[[ "$RC" == 0 ]] || fail "review: exited $RC"
+[[ "$(cat "$FAKE_STATE/engine_calls")" == "$(printf '%s\n' 'opencode vendor/author' 'opencode vendor/reviewer')" ]] \
+  || fail "review: unexpected sessions: $(tr '\n' ' ' < "$FAKE_STATE/engine_calls")"
+grep -q "REVIEWER of pull request #1" "$FAKE_STATE/prompt_2.txt" || fail "review: reviewer prompt missing"
+new_project review-block
+export FAKE_REVIEW_BLOCK=1
+run_sh -n 1 --review vendor/reviewer
+unset FAKE_REVIEW_BLOCK
+[[ "$RC" == 1 ]] || fail "review-block: a reviewer-blocked PR must stop the run (got $RC)"
+[[ "$(last_outcome)" == "blocked" ]] || fail "review-block: history outcome is '$(last_outcome)'"
+
+# ── 29. Per-item routing from detail lines ───────────────────────────────────
+new_project routing
+cat > "$PROJ/PLAN.md" <<'PLAN'
+# Plan
+
+- [ ] Hard item
+  - engine: claude
+  - model: claude-opus-x
+  - keep the API stable
+- [ ] Easy item
+PLAN
+git -C "$PROJ" commit -qam "plan" && git -C "$PROJ" push -q origin main
+run_sh -n 2 -m vendor/base
+[[ "$RC" == 0 ]] || fail "routing: exited $RC"
+[[ "$(cat "$FAKE_STATE/engine_calls")" == "$(printf '%s\n' 'claude claude-opus-x' 'opencode vendor/base')" ]] \
+  || fail "routing: unexpected sessions: $(tr '\n' ' ' < "$FAKE_STATE/engine_calls")"
+grep -q "keep the API stable" "$FAKE_STATE/prompt_1.txt" || fail "routing: ordinary details must reach the session"
+grep -q "claude-opus-x" "$FAKE_STATE/prompt_1.txt" && fail "routing: route lines leaked into the prompt"
+expect_out "routing: this item runs on claude"
+
+# ── 30. --watch: wait on an empty plan, continue when items land, --stop ends ─
+new_project watch
+sed -i.bak 's/^- \[ \]/- [x]/' "$PROJ/PLAN.md" && rm -f "$PROJ/PLAN.md.bak"
+git -C "$PROJ" commit -qam "plan done" && git -C "$PROJ" push -q origin main
+cat > "$FAKE_STATE/on_sleep" <<HOOK
+#!/usr/bin/env bash
+# first call: a teammate pushes a new item; later calls: stop once it is merged
+if [[ ! -e "$FAKE_STATE/pushed" ]]; then
+  touch "$FAKE_STATE/pushed"
+  w="\$(mktemp -d)"; git clone -q "$FAKE_REMOTE" "\$w/c" 2>/dev/null; cd "\$w/c"
+  printf '%s\n' "- [ ] Item that landed later" >> PLAN.md
+  git commit -qam "plan: new item" && git push -q origin main
+  exit 3
+fi
+if git --git-dir="$FAKE_REMOTE" show main:PLAN.md | grep -q '^- \[x\] Item that landed later'; then
+  : > "$PROJ/logs/.stop-request"; exit 0
+fi
+exit 3
+HOOK
+chmod +x "$FAKE_STATE/on_sleep"
+run_sh -n all --watch 1
+[[ "$RC" == 0 ]] || fail "watch: exited $RC"
+expect_out "--watch: new items landed"
+expect_out "ending the watch"
+remote_plan | grep -x -- "- \[x\] Item that landed later" >/dev/null || fail "watch: the item that landed later was not done"
 
 echo "loop-test OK"

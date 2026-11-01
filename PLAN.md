@@ -43,15 +43,15 @@
 
 ## Milestone 6: Next
 
-- [ ] Detect the default branch instead of hardcoding main in run.sh, setup-github.sh and the git guard
+- [x] Detect the default branch instead of hardcoding main in run.sh, setup-github.sh and the git guard
   - BASE_BRANCH from `git symbolic-ref refs/remotes/origin/HEAD`, overridable in .agentloop.local
   - loop-test scenario with a repository whose default branch is master
-- [ ] Add a local verify gate: VERIFY_CMD runs in the container after a session and a red result gets one local fix session before CI
+- [x] Add a local verify gate: VERIFY_CMD runs in the container after a session and a red result gets one local fix session before CI
   - output clipped like CI logs; skipped when VERIFY_CMD is unset
-- [ ] Add --watch: when the plan is empty, poll main every N minutes and continue as soon as new items land
-- [ ] Route single items to another engine or model with a detail line (e.g. "engine: claude", "model: vendor/x")
-- [ ] Add an optional --review session: a second model reviews the PR diff and requests changes before the PR is labelled automated
-- [ ] When a session committed but opened no PR, push and open it from bash with the blocked label instead of stopping
+- [x] Add --watch: when the plan is empty, poll main every N minutes and continue as soon as new items land
+- [x] Route single items to another engine or model with a detail line (e.g. "engine: claude", "model: vendor/x")
+- [x] Add an optional --review session: a second model reviews the PR diff and requests changes before the PR is labelled automated
+- [x] When a session committed but opened no PR, push and open it from bash with the blocked label instead of stopping
 - [ ] Add Edit/Write deny rules for .agents/skills/agentloop-*/** to template/.claude/settings.json and assert them in tests/install-test.sh
 - [ ] Add Gemini CLI as a fourth engine per docs/ENGINES.md, with stream fixtures recorded from a real session
 

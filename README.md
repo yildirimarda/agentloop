@@ -36,7 +36,10 @@ same loop — see [the engine contract](docs/ENGINES.md).
   plan accounting never depend on the model remembering a step.
 - **It heals itself.** A red PR gets its failing CI log handed back to the
   agent (`--ci-retries`); a session that produced nothing switches to the next
-  model (`--fallback-models`) — free endpoints churn.
+  model (`--fallback-models`) — free endpoints churn. `--verify` runs your
+  tests locally first (one fix session before CI); `--review` lets a second
+  model check each PR; work that was committed but never turned into a PR is
+  pushed and opened from bash, flagged `blocked`.
 - **Sessions start oriented.** The knowledge graph's answer for the item is in
   the prompt before the model reads a file; indented item details reach the
   session as acceptance criteria; skills carry the playbooks.
