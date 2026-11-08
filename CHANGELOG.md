@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/yildirimarda/agentloop/compare/v0.17.0...v0.18.0) (2026-11-08)
+
+
+### Features
+
+* rate limits, --resume, task position, --set and SMALL_MODEL ([fd11041](https://github.com/yildirimarda/agentloop/commit/fd1104104d0d576fde18f1928329b170288c2759))
+
 ## [0.17.0](https://github.com/yildirimarda/agentloop/compare/v0.16.1...v0.17.0) (2026-11-01)
 
 
