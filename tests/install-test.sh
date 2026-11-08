@@ -499,6 +499,7 @@ echo "$old_out" | grep -q "skipped    .agents/skills/agentloop-ci-fix/SKILL.md" 
 # ── 13d. Rate-limit arithmetic ───────────────────────────────────────────────
 # shellcheck disable=SC2034  # read by the eval'd functions
 RPM=0 RPD=0 TPM=0 TPD=0 ITPM=0 OTPM=0
+# shellcheck disable=SC2034  # set and read by the eval'd rate functions
 RATE_WHY=""
 mkdir -p "$TMP/rate" && cd "$TMP/rate"
 RATE_LEDGER="$TMP/rate/ledger"
@@ -512,6 +513,7 @@ w="$(rate_wait_for req 60 2 1)"
 [[ "$(rate_wait_for in 60 600 150)" == 0 ]] || fail "rate: ITPM 600 fits 400 + 150"
 [[ "$(rate_wait_for out 60 40 20)" -gt 0 ]] || fail "rate: OTPM 40 cannot fit 40 + 20"
 [[ "$(rate_wait_for tok 60 100 500)" == 0 ]] || fail "rate: one request larger than the limit must not wait forever"
+# shellcheck disable=SC2034  # read by the eval'd rate_wait_secs
 RPM=0; TPM=450
 r="$(rate_wait_secs 100 50)"
 [[ "${r%%|*}" -gt 0 && "${r#*|}" == "TPM (450)" ]] || fail "rate: wait_secs gave '$r'"
