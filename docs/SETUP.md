@@ -1232,14 +1232,24 @@ keeps going empty is easy to spot and drop.
 | `--no-graph` | off | Graphify is misbehaving |
 | `--no-graph-context` | off | Don't put the graph's answer for the item into the prompt (`GRAPH_CONTEXT=0`) |
 | `--image NAME` | `agent` | You keep multiple container variants |
+| `--resume [BRANCH]` | off | A run failed and kept its work branch (`agent/...`). Continue the item instead of starting from `main`: switches to the branch (default: the one checked out, else the newest `agent/` branch), re-applies the leftovers the failed run stashed, tells the session to pick up where the last one stopped, then PR / wait / merge as usual. `-n 3` goes on to later items afterwards |
+| `--small-model ID` | none | Cheap model for titles and summaries: opencode's `small_model` (inline config, `opencode.json` untouched) or Claude's haiku slot; ignored by codex (`SMALL_MODEL=`) |
+| `--rpm N` `--rpd N` `--tpm N` `--tpd N` `--itpm N` `--otpm N` | 0 = unlimited | Free endpoints cap requests and tokens per minute / day. Every request is recorded in `logs/.rate-usage`; just before one more would break a limit the session container is **paused** (`docker pause`) and resumed when the window allows, so nothing errors with a 429. Daily limits can wait for hours (Ctrl+C ends it); the ledger survives between runs. `--doctor` shows the limits and the usage recorded |
+| `--set KEY=VALUE` | | Any setting from the list below, repeatable: `--set VERIFY_CMD="make test" --set WATCH_MIN=10` |
+| `--X` / `--no-X` pairs | | `--learn`, `--discover`, `--graph`, `--graph-context`, `--git-guard`, `--headroom`, `--wait`, `--notify`, `--auto-replan`, `--ambitious` each have an on and an off form, so a flag can undo `.agentloop.local` in either direction. Also `--graph-budget N`, `--base-branch NAME` |
 
 **Per-machine defaults without touching git:** put `KEY=VALUE` lines in
-`.agentloop.local` (gitignored, created by you). Supported keys: `MODEL`,
-`ENGINE`, `CI_RETRIES`, `TIMEOUT_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`,
-`HEADROOM`, `STALL_MIN`, `LEARN`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
-`GIT_GUARD`, `FALLBACK_MODELS`, `MAX_COST`, `BASE_BRANCH`, `VERIFY_CMD`,
-`REVIEW_MODEL`, `WATCH_MIN`, `NOTIFY`. `BASE_BRANCH` is normally detected
-from `origin/HEAD` (master, trunk… work out of the box).
+`.agentloop.local` (gitignored, created by you). Supported keys: `ENGINE`,
+`MODEL`, `SMALL_MODEL`, `FALLBACK_MODELS`, `CI_RETRIES`, `TIMEOUT_MIN`,
+`STALL_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`, `HEADROOM`, `AMBITIOUS`,
+`WAIT`, `DISCOVER`, `LEARN`, `USE_GRAPH`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
+`GIT_GUARD`, `BASE_BRANCH`, `MAX_COST`, `VERIFY_CMD`, `REVIEW_MODEL`,
+`WATCH_MIN`, `NOTIFY`, `RPM`, `RPD`, `TPM`, `TPD`, `ITPM`, `OTPM`. Booleans
+take 1/0, true/false, yes/no or on/off. A last line without a trailing newline
+is read, one pair of surrounding quotes is stripped, and an unknown key prints
+a warning instead of being silently ignored. The same keys work on the command
+line as `--set KEY=VALUE`. `BASE_BRANCH` is normally detected from `origin/HEAD`
+(master, trunk… work out of the box).
 Precedence: CLI flags > `.agentloop.local` > committed defaults
 (`opencode.json`). This is the intended way to switch models freely — the
 committed config stays the team/repo default; your experiments never require

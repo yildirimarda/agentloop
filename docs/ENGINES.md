@@ -120,6 +120,26 @@ security add-generic-password -s nvidia -a "$USER" -w 'nvapi-...'
 
 When the model id starts with `nvidia`, the OpenRouter key becomes optional.
 
+## Rate limits and small models
+
+`RPM RPD TPM TPD ITPM OTPM` (default 0 = unlimited) make `run.sh` pace a
+session: `rate_gate` sits between the engine and the log, turns each completed
+model request into a ledger line (`logs/.rate-usage`: epoch, input, output
+tokens) and, when one more request of the same size would break a limit,
+`docker pause`s the container until enough of the window has passed. An engine
+only has to emit a usage-bearing event per request: opencode `step_finish`
+(`.part.tokens.input/output`), codex `turn.completed` (`.usage`), claude
+`assistant` messages (`.message.usage`, once per `.message.id`). A new engine
+extends the jq program in `rate_gate`.
+
+Claude's first event per message can carry a provisional `output_tokens`, so
+OTPM / TPM / TPD are conservative-low for that engine (ITPM and the request
+limits are exact).
+
+`SMALL_MODEL` reaches the engine by environment so the project files stay
+untouched: opencode gets `OPENCODE_CONFIG_CONTENT={"small_model": ...}`, claude
+`ANTHROPIC_DEFAULT_HAIKU_MODEL`; codex has no equivalent and ignores it.
+
 ## Session limits and failure handling
 
 - `--stall-timeout N` (default 45 min) kills a session that has produced no

@@ -19,6 +19,8 @@ CI_RETRIES=1
 STALL_MIN=45            # kill a session that emits no event for this long (0 = off)
 RUN_ID="$$-$(date +%s)"
 CONTAINER_NAME=""
+OC_CONFIG=""; CLAUDE_SMALL=""; RATE_LOG=""
+TASK_POS=""; TASK_ITEM=""   # "TASK 2/5" and its item text: repeated when a run ends
 AGENT_SEQ=0
 WD_PID=""
 SNAP=""
@@ -26,6 +28,7 @@ SKILLSNAP=""
 SKILLS_ADDED=0
 
 MODEL=""
+SMALL_MODEL=""           # cheap model for titles/summaries (opencode small_model; claude haiku slot)
 FALLBACK_MODELS=""      # comma-separated; tried in order when a session yields nothing
 USE_GRAPH=1
 GRAPH_CONTEXT=1         # seed item prompts with a knowledge-graph excerpt
@@ -42,10 +45,16 @@ MAX_COST=""             # USD budget for one run (engines that report cost)
 VERIFY_CMD=""            # local gate run in the container after a session (one fix session if red)
 REVIEW_MODEL=""          # a second model reviews every PR before it can auto-merge
 WATCH_MIN=0              # with an empty plan: poll the default branch every N minutes
+RPM=0 RPD=0 TPM=0 TPD=0 ITPM=0 OTPM=0   # provider rate limits to stay under (0 = unlimited)
+RATE_LEDGER="logs/.rate-usage"           # one line per model request: epoch input output
 NOTIFY=0                # notify (macOS banner / webhook) when a long run ends
 HISTORY="logs/history.tsv"
 ISSUE_NUM=""            # --issue N
 REVIEW_PR=""            # --address-review N
+RESUME=0                # --resume [BRANCH]: continue an item on its kept work branch
+RESUME_BRANCH=""
+RESUME_ACTIVE=0          # true during the first item of a --resume run
+RESUME_ITEM=""
 TRUST_INPUT=0           # --trust-input: accept GitHub text from non-maintainers
 ARG_TEXT=""
 SKILLS_DIR=".agents/skills"
@@ -54,34 +63,38 @@ SKILLS_DIR=".agents/skills"
 GH_RUN_TOKEN="" GH_AGENT_TOKEN="" OPENROUTER_KEY="" ANTHROPIC_KEY="" CODEX_KEY="" NVIDIA_KEY=""
 SKILLS_MOUNT="" GUARD_MOUNT=""
 
-# ── Local per-machine overrides: .agentloop.local (gitignored) ───────────────
-# Change model/engine without touching git. KEY=VALUE lines, no quotes:
-#   MODEL=openrouter/vendor/model
-#   ENGINE=opencode          (or claude)
-#   CI_RETRIES=5
-#   TIMEOUT_MIN=40           (minutes to wait for a PR merge)
-#   STALL_MIN=45             (kill a session silent this long; 0 = off)
-#   LEARN=0                  (forbid sessions to record project skills)
-#   GRAPH_CONTEXT=0          (don't seed prompts with a graph excerpt)
-#   GRAPH_BUDGET=1200        (token budget of that excerpt)
-#   GIT_GUARD=0              (disable the in-container push guard — not advised)
-#   FALLBACK_MODELS=a/b,c/d  (models to switch to when a session yields nothing)
-#   BASE_BRANCH=trunk        (default branch; normally detected from origin/HEAD)
-#   MAX_COST=5               (stop a run once engines report $5 spent)
-#   VERIFY_CMD="make test"   (local gate; red = one fix session before CI)
-#   REVIEW_MODEL=vendor/x    (a second model reviews each PR before automerge)
-#   WATCH_MIN=10             (empty plan: poll for new items every 10 minutes)
-#   NOTIFY=1                 (notify when a run stops or finishes)
-# Precedence: CLI flags > this file > committed defaults (opencode.json).
+# ── Settings: .agentloop.local, --set and flags ──────────────────────────────
+# Every setting below can be given three ways, later ones winning:
+#   1. .agentloop.local (gitignored, per machine): KEY=VALUE lines, e.g.
+#        MODEL=openrouter/vendor/model
+#        VERIFY_CMD=make test          (one pair of surrounding quotes is fine)
+#   2. --set KEY=VALUE on the command line (any key, repeatable)
+#   3. the dedicated flag (--model, --rpm, --no-learn, ... see --help)
+# Precedence: CLI > .agentloop.local > committed defaults (opencode.json).
+SETTING_KEYS=" ENGINE MODEL SMALL_MODEL FALLBACK_MODELS CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH IMAGE
+  AUTO_REPLAN HEADROOM AMBITIOUS WAIT DISCOVER LEARN USE_GRAPH GRAPH_CONTEXT GRAPH_BUDGET GIT_GUARD BASE_BRANCH
+  MAX_COST VERIFY_CMD REVIEW_MODEL WATCH_MIN NOTIFY RPM RPD TPM TPD ITPM OTPM "
+SETTING_KEYS="${SETTING_KEYS//$'\n'/ }"
+apply_setting() {   # KEY VALUE [origin] — assign a validated key
+  local k="$1" v="$2" origin="${3:-}"
+  v="${v%$'\r'}"; v="${v%"${v##*[![:space:]]}"}"; v="${v#"${v%%[![:space:]]*}"}"
+  # one pair of matching surrounding quotes
+  case "$v" in
+    \"*\") v="${v#\"}"; v="${v%\"}" ;;
+    \'*\') v="${v#\'}"; v="${v%\'}" ;;
+  esac
+  case "$SETTING_KEYS" in
+    *" $k "*) printf -v "$k" '%s' "$v" ;;
+    *) if [[ -n "$origin" ]]; then echo "warning: ignoring unknown setting '$k' in $origin" >&2
+       else echo "error: unknown setting '$k' (known:${SETTING_KEYS% })" >&2; exit 1; fi ;;
+  esac
+}
 if [[ -f "$REPO_DIR/.agentloop.local" ]]; then
-  while IFS='=' read -r _k _v; do
+  # `|| [[ -n $_k ]]`: the last line counts even without a trailing newline
+  while IFS='=' read -r _k _v || [[ -n "$_k" ]]; do
+    _k="${_k%$'\r'}"
     [[ "$_k" =~ ^[A-Z_]+$ ]] || continue
-    # tolerate CRLF files and stray spaces around values
-    _v="${_v%$'\r'}"; _v="${_v%"${_v##*[![:space:]]}"}"; _v="${_v#"${_v%%[![:space:]]*}"}"
-    case "$_k" in
-      ENGINE|MODEL|CI_RETRIES|TIMEOUT_MIN|MAX_GROWTH|IMAGE|AUTO_REPLAN|HEADROOM|STALL_MIN|LEARN|GRAPH_CONTEXT|GRAPH_BUDGET|GIT_GUARD|FALLBACK_MODELS|MAX_COST|BASE_BRANCH|VERIFY_CMD|REVIEW_MODEL|WATCH_MIN|NOTIFY)
-        printf -v "$_k" '%s' "$_v" ;;
-    esac
+    apply_setting "$_k" "${_v:-}" ".agentloop.local"
   done < "$REPO_DIR/.agentloop.local"
 fi
 
@@ -105,6 +118,11 @@ Modes
       --trust-input         let --issue / --address-review use text from people
                             who are not maintainers (off by default: prompt
                             injection into an agent that can push)
+      --resume [BRANCH]     continue an item on the work branch a failed run kept
+                            (default: the branch checked out now, else the newest
+                            agent/ branch). Restores stashed leftovers, tells the
+                            session to pick up where the last one stopped, then
+                            opens/updates the PR and waits for the merge as usual
       --next                dry run: print the next item. No API calls
       --skills              list the skills sessions can load (.agents/skills/)
                             and flag malformed ones. No API calls
@@ -179,9 +197,37 @@ Options
       --image NAME          container image (default "agent")
   -h, --help                this
 
+Models
+      --small-model ID      cheap model for titles and summaries (opencode:
+                            small_model; claude: the haiku slot; codex: n/a)
+                            (persist: SMALL_MODEL=... in .agentloop.local)
+
+Rate limits — stay under a free endpoint's quotas (default 0 = unlimited)
+      --rpm N  --rpd N      requests per minute / per day
+      --tpm N  --tpd N      tokens (input + output) per minute / per day
+      --itpm N --otpm N     input / output tokens per minute
+                            The loop pauses the session container just before
+                            the next request would break a limit and resumes
+                            when the window allows; daily limits can wait for
+                            hours (Ctrl+C ends it). Usage is kept in
+                            logs/.rate-usage, so limits hold across runs.
+
+Switches (each has an on and an off form, so a CLI flag can undo
+.agentloop.local in either direction)
+      --learn / --no-learn            --discover / --no-discover
+      --graph / --no-graph            --graph-context / --no-graph-context
+      --git-guard / --no-git-guard    --headroom / --no-headroom
+      --wait / --no-wait              --notify / --no-notify
+      --auto-replan / --no-auto-replan  --ambitious / --no-ambitious
+      --graph-budget N  --base-branch NAME
+
+Any setting: --set KEY=VALUE (repeatable), e.g. --set VERIFY_CMD="make test"
+--set WATCH_MIN=10. Known keys: see the list in docs/SETUP.md.
+
 Per-machine defaults (no git involved): put KEY=VALUE lines in
 .agentloop.local (gitignored) — e.g. MODEL=openrouter/vendor/model,
-ENGINE=claude, CI_RETRIES=5. CLI flags still win.
+SMALL_MODEL=openrouter/vendor/cheap, ENGINE=claude, CI_RETRIES=5, RPM=20.
+Precedence: CLI flags > .agentloop.local > committed defaults.
 
 Examples
   ./run.sh --doctor                          # can a run start? fix what it flags
@@ -208,6 +254,8 @@ while (( $# )); do
     --issue)        MODE="issue"; ISSUE_NUM="${2:?--issue needs an issue number}"; shift 2 ;;
     --address-review) MODE="review"; REVIEW_PR="${2:?--address-review needs a PR number}"; shift 2 ;;
     --trust-input)  TRUST_INPUT=1; shift ;;
+    --resume)       RESUME=1
+                    if [[ $# -gt 1 && "$2" != -* ]]; then RESUME_BRANCH="$2"; shift 2; else shift; fi ;;
     --next)         MODE="next"; shift ;;
     --skills)       MODE="skills"; shift ;;
     --stats)        MODE="stats"; shift ;;
@@ -220,24 +268,47 @@ while (( $# )); do
                     [[ -f "$f" ]] || { echo "error: file not found: $f" >&2; exit 1; }
                     ARG_TEXT="$(cat "$f")"; shift 2 ;;
     -e|--engine)    ENGINE="${2:?--engine needs opencode, claude or codex}"; shift 2 ;;
+    --set)          _kv="${2:?--set needs KEY=VALUE}"
+                    [[ "$_kv" == *=* ]] || { echo "error: --set needs KEY=VALUE (got '$_kv')" >&2; exit 1; }
+                    apply_setting "${_kv%%=*}" "${_kv#*=}"; shift 2 ;;
+    --discover)     DISCOVER=1; shift ;;
     --no-discover)  DISCOVER=0; shift ;;
+    --learn)        LEARN=1; shift ;;
     --no-learn)     LEARN=0; shift ;;
     --max-growth)   MAX_GROWTH="${2:?--max-growth needs a number}"; shift 2 ;;
+    --wait)         WAIT=1; shift ;;
     --no-wait)      WAIT=0; shift ;;
     --timeout)      TIMEOUT_MIN="${2:?--timeout needs minutes}"; shift 2 ;;
     --stall-timeout) STALL_MIN="${2:?--stall-timeout needs minutes}"; shift 2 ;;
     --ci-retries)   CI_RETRIES="${2:?--ci-retries needs a number}"; shift 2 ;;
     --auto-replan)  AUTO_REPLAN=1; shift ;;
+    --no-auto-replan) AUTO_REPLAN=0; shift ;;
     --max-cost)     MAX_COST="${2:?--max-cost needs an amount in USD}"; shift 2 ;;
     --notify)       NOTIFY=1; shift ;;
+    --no-notify)    NOTIFY=0; shift ;;
     --verify)       VERIFY_CMD="${2:?--verify needs a shell command}"; shift 2 ;;
     --review)       REVIEW_MODEL="${2:?--review needs a model id}"; shift 2 ;;
     --watch)        WATCH_MIN="${2:?--watch needs minutes between polls}"; shift 2 ;;
     --ambitious)    AMBITIOUS=1; shift ;;
+    --no-ambitious) AMBITIOUS=0; shift ;;
     --headroom)     HEADROOM=1; shift ;;
+    --no-headroom)  HEADROOM=0; shift ;;
     -m|--model)     MODEL="${2:?-m needs a model id}"; shift 2 ;;
+    --small-model)  SMALL_MODEL="${2:?--small-model needs a model id}"; shift 2 ;;
+    --base-branch)  BASE_BRANCH="${2:?--base-branch needs a branch name}"; shift 2 ;;
+    --graph-budget) GRAPH_BUDGET="${2:?--graph-budget needs a token count}"; shift 2 ;;
+    --git-guard)    GIT_GUARD=1; shift ;;
+    --no-git-guard) GIT_GUARD=0; shift ;;
+    --rpm)          RPM="${2:?--rpm needs a number}"; shift 2 ;;
+    --rpd)          RPD="${2:?--rpd needs a number}"; shift 2 ;;
+    --tpm)          TPM="${2:?--tpm needs a number}"; shift 2 ;;
+    --tpd)          TPD="${2:?--tpd needs a number}"; shift 2 ;;
+    --itpm)         ITPM="${2:?--itpm needs a number}"; shift 2 ;;
+    --otpm)         OTPM="${2:?--otpm needs a number}"; shift 2 ;;
     --fallback-models) FALLBACK_MODELS="${2:?--fallback-models needs a comma-separated list}"; shift 2 ;;
+    --graph)        USE_GRAPH=1; shift ;;
     --no-graph)     USE_GRAPH=0; shift ;;
+    --graph-context) GRAPH_CONTEXT=1; shift ;;
     --no-graph-context) GRAPH_CONTEXT=0; shift ;;
     --image)        IMAGE="${2:?--image needs a name}"; shift 2 ;;
     -h|--help)      usage; exit 0 ;;
@@ -247,6 +318,9 @@ while (( $# )); do
 done
 
 [[ "$COUNT" == "all" ]] && COUNT=9999
+if (( RESUME )) && [[ "$MODE" != "plan" ]]; then
+  echo "error: --resume continues a plan item; it cannot be combined with --$MODE" >&2; exit 1
+fi
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 die()  { echo "error: $*" >&2; exit 1; }
@@ -282,6 +356,23 @@ plan_details() {
   awk '
     !found && /^[[:space:]]*- \[ \]/ { found = 1; next }
     found {
+      if ($0 ~ /^[[:space:]]*$/ || $0 !~ /^(  |\t)/ || $0 ~ /^[[:space:]]*- \[[ xX]\]/) exit
+      sub(/^(  |\t)/, "")
+      print
+    }' "$PLAN" 2>/dev/null
+}
+
+# Details of a NAMED open item (for --resume, where the branch's PLAN.md
+# already shows it ticked and the loop reads the default branch's copy).
+plan_details_for() {
+  [[ -f "$PLAN" ]] || return 0
+  awk -v want="$1" '
+    !found {
+      t = $0
+      if (t ~ /^[[:space:]]*- \[ \]/) { sub(/^[[:space:]]*- \[ \][[:space:]]*/, "", t); if (t == want) found = 1 }
+      next
+    }
+    {
       if ($0 ~ /^[[:space:]]*$/ || $0 !~ /^(  |\t)/ || $0 ~ /^[[:space:]]*- \[[ xX]\]/) exit
       sub(/^(  |\t)/, "")
       print
@@ -466,11 +557,11 @@ esac
 # Settings come from flags and from .agentloop.local; validate them up front,
 # or a typo surfaces as an arithmetic error in the middle of a run — after a
 # PR is already open. Booleans also accept true/false, yes/no, on/off.
-for _v in COUNT CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH GRAPH_BUDGET WATCH_MIN; do
+for _v in COUNT CI_RETRIES TIMEOUT_MIN STALL_MIN MAX_GROWTH GRAPH_BUDGET WATCH_MIN RPM RPD TPM TPD ITPM OTPM; do
   # no leading zeros: bash arithmetic reads 08 as a (broken) octal number
   [[ "${!_v}" =~ ^(0|[1-9][0-9]*)$ ]] || die "$_v must be a whole number (got '${!_v}')"
 done
-for _v in AUTO_REPLAN HEADROOM LEARN GIT_GUARD GRAPH_CONTEXT NOTIFY; do
+for _v in AUTO_REPLAN HEADROOM AMBITIOUS WAIT DISCOVER USE_GRAPH LEARN GIT_GUARD GRAPH_CONTEXT NOTIFY; do
   case "$(printf '%s' "${!_v}" | tr '[:upper:]' '[:lower:]')" in
     1|true|yes|on)  printf -v "$_v" '%s' 1 ;;
     0|false|no|off) printf -v "$_v" '%s' 0 ;;
@@ -479,6 +570,15 @@ for _v in AUTO_REPLAN HEADROOM LEARN GIT_GUARD GRAPH_CONTEXT NOTIFY; do
 done
 [[ -z "$MAX_COST" || "$MAX_COST" =~ ^[0-9]+([.][0-9]+)?$ ]] \
   || die "MAX_COST / --max-cost needs an amount in USD, like 5 or 2.50 (got '$MAX_COST')"
+
+# Any rate limit configured? (pacing logic: "Rate limits" further down)
+rate_enabled() { (( RPM || RPD || TPM || TPD || ITPM || OTPM )); }
+if rate_enabled && ! command -v jq >/dev/null 2>&1; then
+  die "rate limits (RPM/RPD/TPM/TPD/ITPM/OTPM) need jq to read the engine's usage events — install jq or leave the limits at 0"
+fi
+
+[[ -z "$SMALL_MODEL" || "$SMALL_MODEL" =~ ^[A-Za-z0-9._:/@+-]+$ ]] \
+  || die "SMALL_MODEL has odd characters (got '$SMALL_MODEL')"
 
 # The default branch: .agentloop.local wins, then origin/HEAD, then whichever
 # of origin/main, origin/master exists, then the branch checked out now.
@@ -619,6 +719,8 @@ in_container() {
     -e CODEX_API_KEY="$CODEX_KEY" \
     -e NVIDIA_API_KEY="$NVIDIA_KEY" \
     -e GH_TOKEN="${GH_RUN_TOKEN:-$GH_AGENT_TOKEN}" \
+    ${OC_CONFIG:+-e "OPENCODE_CONFIG_CONTENT=$OC_CONFIG"} \
+    ${CLAUDE_SMALL:+-e "ANTHROPIC_DEFAULT_HAIKU_MODEL=$CLAUDE_SMALL"} \
     -e GH_PROMPT_DISABLED=1 \
     -e GH_NO_UPDATE_NOTIFIER=1 \
     -e GRAPHIFY_QUERY_LOG_DISABLE=1 \
@@ -800,7 +902,8 @@ if [[ "$MODE" == "doctor" ]]; then
   d_fail() { printf '  ✖ %s\n' "$*"; D_FAIL=$(( D_FAIL + 1 )); }
   d_head() { printf '\n%s\n' "$*"; }
   echo "agentloop doctor — $REPO_DIR"
-  echo "engine: $ENGINE${MODEL:+ · model: $MODEL}${FALLBACK_MODELS:+ · fallbacks: $FALLBACK_MODELS}"
+  echo "engine: $ENGINE${MODEL:+ · model: $MODEL}${SMALL_MODEL:+ · small: $SMALL_MODEL}${FALLBACK_MODELS:+ · fallbacks: $FALLBACK_MODELS}"
+  rate_enabled && echo "rate limits: RPM=$RPM RPD=$RPD TPM=$TPM TPD=$TPD ITPM=$ITPM OTPM=$OTPM"
 
   d_head "host"
   if command -v git >/dev/null 2>&1; then d_ok "git $(git --version | awk '{ print $3 }')"; else d_fail "git not found"; fi
@@ -1051,6 +1154,22 @@ ORCHECK
     fi
   fi
 
+  d_head "settings"
+  if rate_enabled; then
+    d_ok "rate limits: RPM=$RPM RPD=$RPD TPM=$TPM TPD=$TPD ITPM=$ITPM OTPM=$OTPM (0 = unlimited)"
+    _use="$([[ -s "$RATE_LEDGER" ]] && awk -v now="$(date +%s)" '
+      $1 > now - 86400 { d++; dt += $2 + $3 }
+      $1 > now - 60    { m++; mt += $2 + $3 }
+      END { printf "%d req / %d tokens in the last minute, %d req / %d tokens in the last day", m, mt, d, dt }' "$RATE_LEDGER")"
+    d_info "usage recorded: ${_use:-nothing yet}"
+  else
+    d_info "rate limits: none (free endpoint quotas? --rpm / --rpd / --tpm / --tpd / --itpm / --otpm)"
+  fi
+  if [[ -n "$SMALL_MODEL" ]]; then
+    if [[ "$ENGINE" == codex ]]; then d_warn "SMALL_MODEL is ignored by the codex engine"
+    else d_ok "small model: $SMALL_MODEL"; fi
+  fi
+
   echo
   if (( D_FAIL )); then
     echo "doctor: $D_FAIL problem(s), $D_WARN warning(s) — fix the ✖ lines first"
@@ -1117,7 +1236,7 @@ fi
 # you leave uncommitted would be swept into its commits or dragged across its
 # branch switches. Refuse to start dirty. (Corollary, not enforceable here:
 # don't run git in this repo yourself while a run is in progress.)
-if [[ "$MODE" != "ghsetup" ]] && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+if [[ "$MODE" != "ghsetup" ]] && (( ! RESUME )) && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
   if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
     die "working tree is not clean — commit or stash before starting a run.
 The agent works in this same checkout; uncommitted changes would end up in
@@ -1326,9 +1445,131 @@ stop_watchdog() {
   WD_PID=""
 }
 
+# ── Rate limits ───────────────────────────────────────────────────────────────
+# Free endpoints cap requests and tokens per minute and per day. With limits
+# set (RPM RPD TPM TPD ITPM OTPM; 0 = unlimited, the default) every model
+# request is recorded in logs/.rate-usage ("epoch input output" per line) and,
+# whenever one more request of the same size would break a limit, the session
+# container is PAUSED (docker pause) until enough of the window has passed.
+# Nothing is lost: the agent simply stops mid-thought and goes on after the
+# pause. The ledger survives between sessions and runs, so a daily budget
+# holds across a whole day of runs. Per-minute waits last seconds; a daily
+# limit can wait for hours — Ctrl+C ends it.
+
+rate_record() {   # input output
+  printf '%s %s %s\n' "$(date +%s)" "${1:-0}" "${2:-0}" >> "$RATE_LEDGER"
+}
+
+# Drop ledger lines older than a day so the file stays small.
+rate_prune() {
+  [[ -s "$RATE_LEDGER" ]] || return 0
+  awk -v cut="$(( $(date +%s) - 86400 ))" '$1 > cut' "$RATE_LEDGER" > "$RATE_LEDGER.tmp" 2>/dev/null \
+    && mv "$RATE_LEDGER.tmp" "$RATE_LEDGER" || rm -f "$RATE_LEDGER.tmp"
+}
+
+# Seconds until one more request fits a limit; 0 = go now.
+#   $1 metric: req | tok | in | out     $2 window seconds     $3 limit
+#   $4 expected size of the next request in that metric (1 for req)
+rate_wait_for() {
+  [[ -s "$RATE_LEDGER" ]] || { echo 0; return; }
+  awk -v now="$(date +%s)" -v win="$2" -v lim="$3" -v m="$1" -v est="$4" '
+    $1 > now - win {
+      n++; t[n] = $1
+      v[n] = (m == "req") ? 1 : (m == "in") ? $2 : (m == "out") ? $3 : $2 + $3
+      sum += v[n]
+    }
+    END {
+      need = sum + est - lim
+      if (need <= 0) { print 0; exit }
+      for (i = 1; i <= n; i++) { acc += v[i]; if (acc >= need) { w = t[i] + win - now + 1; print (w > 0 ? w : 1); exit } }
+      print 0   # one request alone exceeds the limit: waiting cannot help, go
+    }' "$RATE_LEDGER"
+}
+
+# The longest wait over every configured limit, printed as "SECONDS|reason".
+RATE_WHY=""
+rate_wait_secs() {   # expected input tokens, expected output tokens of the next request
+  local w=0 x ein="${1:-0}" eout="${2:-0}"
+  RATE_WHY=""
+  _rw() {   # label metric window limit est
+    x="$(rate_wait_for "$2" "$3" "$4" "$5")"
+    if (( x > w )); then w=$x; RATE_WHY="$1 ($4)"; fi
+  }
+  (( RPM  )) && _rw RPM  req  60    "$RPM"  1
+  (( RPD  )) && _rw RPD  req  86400 "$RPD"  1
+  (( TPM  )) && _rw TPM  tok  60    "$TPM"  $(( ein + eout ))
+  (( TPD  )) && _rw TPD  tok  86400 "$TPD"  $(( ein + eout ))
+  (( ITPM )) && _rw ITPM in   60    "$ITPM" "$ein"
+  (( OTPM )) && _rw OTPM out  60    "$OTPM" "$eout"
+  echo "$w|$RATE_WHY"
+}
+
+clock_in() {   # HH:MM that is $1 seconds from now (BSD date, then GNU date)
+  date -v+"$1"S +%H:%M 2>/dev/null || date -d "+$1 seconds" +%H:%M 2>/dev/null || echo "?"
+}
+
+# Block until the limits allow one more request (sizes: expected input and
+# output tokens). Pauses the session container, when there is one, so the
+# agent does not keep working into a 429; keeps the stall watchdog quiet.
+rate_hold() {
+  local w left step paused=0 shown=0
+  while :; do
+    w="$(rate_wait_secs "${1:-0}" "${2:-0}")"
+    RATE_WHY="${w#*|}"; w="${w%%|*}"
+    (( w > 0 )) || break
+    if (( ! paused )) && [[ -n "$CONTAINER_NAME" ]]; then
+      # no container to pause = the session already ended (this was its last
+      # request): nothing is running into the limit, so do not wait here
+      docker pause "$CONTAINER_NAME" >/dev/null 2>&1 && paused=1 || return 0
+    fi
+    echo "  ⏸ rate limit $RATE_WHY: waiting ${w}s (until $(clock_in "$w"))" >&2
+    left=$w
+    while (( left > 0 )); do
+      step=$(( left > 20 ? 20 : left )); sleep "$step"; left=$(( left - step ))
+      [[ -n "${RATE_LOG:-}" ]] && touch "$RATE_LOG" 2>/dev/null
+      shown=$(( shown + step ))
+      if (( left > 0 && shown >= 600 )); then
+        shown=0; echo "  ⏸ still waiting for $RATE_WHY — $(( left / 60 ))m left" >&2
+      fi
+    done
+  done
+  if (( paused )); then docker unpause "$CONTAINER_NAME" >/dev/null 2>&1 || true; fi
+  return 0
+}
+
+# Stream stage between the engine and the log: passes every line through and,
+# after each completed model request, records its tokens and holds if the
+# next one would break a limit. One request per event: opencode step_finish,
+# codex turn.completed, claude assistant messages (once per message id).
+rate_gate() {
+  local line rec in out id last_id=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line"
+    case "$line" in *tokens*|*usage*) : ;; *) continue ;; esac
+    rec="$(printf '%s\n' "$line" | jq -Rr 'fromjson? | objects |
+      if .type == "step_finish" then
+        ((.part.tokens.input // 0) as $i | (.part.tokens.output // 0) as $o | (.part.tokens.total // 0) as $t |
+         if ($i + $o) == 0 then "\($t) 0 -" else "\($i) \($o) -" end)
+      elif .type == "turn.completed" then
+        "\(.usage.input_tokens // 0) \(.usage.output_tokens // 0) -"
+      elif .type == "assistant" and (.message.usage != null) then
+        "\(.message.usage.input_tokens // 0) \(.message.usage.output_tokens // 0) \(.message.id // "-")"
+      else empty end' 2>/dev/null)"
+    [[ -n "$rec" ]] || continue
+    read -r in out id <<< "$rec"
+    if [[ "$id" != "-" && "$id" == "$last_id" ]]; then continue; fi
+    last_id="$id"
+    rate_record "$in" "$out"
+    rate_hold "$in" "$out"
+  done
+}
+maybe_gate() { if rate_enabled; then rate_gate; else cat; fi; }
+
 run_agent() {
   local prompt="$1" log wdflag metrics="" s_tokens=0 s_cost=0 s_graph=0
   log="logs/$(date +%Y%m%d-%H%M%S)-$ENGINE.jsonl"
+  if rate_enabled; then rate_prune; rate_hold 0 0; fi   # not even start a session into a full window
+  RATE_LOG="$log"
   info "engine: $ENGINE"
   info "log: $log (full transcript; terminal shows tool calls only)"
   echo
@@ -1341,6 +1582,17 @@ run_agent() {
     WD_PID=$!
   fi
 
+  # Runtime config overrides, passed by environment so the project's own files
+  # stay untouched: opencode takes inline JSON, claude reads the haiku slot.
+  OC_CONFIG=""; CLAUDE_SMALL=""
+  case "$ENGINE" in
+    claude) CLAUDE_SMALL="$SMALL_MODEL" ;;
+    opencode)
+      _oc=""
+      [[ -n "$SMALL_MODEL" ]] && _oc="\"small_model\":\"$SMALL_MODEL\""
+      (( HEADROOM )) && _oc="${_oc:+$_oc,}\"provider\":{\"openrouter\":{\"options\":{\"baseURL\":\"http://127.0.0.1:8787/v1\"}}}"
+      [[ -n "$_oc" ]] && OC_CONFIG="{$_oc}" ;;
+  esac
   if [[ "$ENGINE" == "claude" ]]; then
     # Headless Claude Code. bypassPermissions is safe for the same reason it
     # is for OpenCode: the container is the boundary. Deny rules in
@@ -1348,7 +1600,7 @@ run_agent() {
     in_container claude -p "$prompt" \
       --permission-mode bypassPermissions \
       --output-format stream-json --verbose \
-      ${MODEL:+--model "$MODEL"} | tee "$log" | stream_view
+      ${MODEL:+--model "$MODEL"} | maybe_gate | tee "$log" | stream_view
   elif [[ "$ENGINE" == "codex" ]]; then
     # Codex ships its own bubblewrap sandbox, which cannot start inside our
     # container. The container IS the sandbox here, so bypass Codex's — the
@@ -1356,11 +1608,11 @@ run_agent() {
     in_container codex exec --json \
       --dangerously-bypass-approvals-and-sandbox \
       ${MODEL:+-c "model=\"$MODEL\""} \
-      "$prompt" | tee "$log" | stream_view
+      "$prompt" | maybe_gate | tee "$log" | stream_view
   elif (( HEADROOM )); then
     # Headroom: an in-container OpenAI-compatible proxy that compresses old
     # tool outputs (locally, reversibly) before they reach the model. OpenCode
-    # is pointed at it via OPENCODE_CONFIG_CONTENT (a runtime override — the
+    # is pointed at it via OPENCODE_CONFIG_CONTENT (built above; a runtime override — the
     # project's opencode.json is untouched); the proxy forwards the
     # Authorization header to OpenRouter, so it needs no key of its own.
     info "headroom: compressing context via local proxy (profile: coding)"
@@ -1370,12 +1622,12 @@ run_agent() {
       for _ in $(seq 1 40); do
         curl -sf http://127.0.0.1:8787/health >/dev/null 2>&1 && break; sleep 0.5
       done
-      export OPENCODE_CONFIG_CONTENT="{\"provider\":{\"openrouter\":{\"options\":{\"baseURL\":\"http://127.0.0.1:8787/v1\"}}}}"
-      exec "$@"' _ opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
+      exec "$@"' _ opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | maybe_gate | tee "$log" | stream_view
   else
-    in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | tee "$log" | stream_view
+    in_container opencode run --format json ${MODEL:+-m "$MODEL"} "$prompt" | maybe_gate | tee "$log" | stream_view
   fi
   local rc=${PIPESTATUS[0]}
+  OC_CONFIG=""; CLAUDE_SMALL=""
   stop_watchdog
   CONTAINER_NAME=""
   if [[ -s "$wdflag" ]]; then
@@ -1594,6 +1846,10 @@ tick_item_on_branch() {
 # never destroy uncommitted work automatically.
 abandon_work_branch() {
   [[ -n "$WORK_BRANCH" ]] || return 0
+  if (( RESUME_ACTIVE )); then   # a resumed branch holds earlier work: never delete it
+    keep_branch_and_return "the resumed session produced nothing"
+    return 0
+  fi
   if [[ -z "$(git status --porcelain 2>/dev/null)" ]]; then
     git switch "$BASE_BRANCH" --quiet 2>/dev/null || true
     git branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
@@ -1634,6 +1890,9 @@ keep_branch_and_return() {
 kill_run_containers() {
   local ids
   ids="$(docker ps -q --filter "label=agentloop.run=$RUN_ID" 2>/dev/null || true)"
+  # a session paused for a rate limit must be unpaused before it can be killed
+  # shellcheck disable=SC2086
+  [[ -n "$ids" ]] && docker unpause $ids >/dev/null 2>&1
   # shellcheck disable=SC2086
   [[ -n "$ids" ]] && docker kill $ids >/dev/null 2>&1
   return 0
@@ -1647,10 +1906,28 @@ on_interrupt() {
   keep_branch_and_return "interrupted"
   exit 130
 }
+# Where the run was when it ended: the scrolled-away TASK header is not enough
+# when a long run stops hours later.
+task_banner() {   # $1 = ok | fail | stop, $2 = text
+  local mark="✓"
+  [[ "$1" == fail ]] && mark="✖"
+  [[ "$1" == stop ]] && mark="·"
+  echo
+  echo "  $mark $TASK_POS — $2"
+  echo "    $TASK_ITEM"
+}
+
 cleanup_exit() {
   local rc=$?
   stop_watchdog
   kill_run_containers
+  if [[ -n "$TASK_POS" ]] && (( rc != 0 )); then
+    echo; rule
+    if (( rc == 130 )); then echo "interrupted during $TASK_POS"; else echo "✖ stopped during $TASK_POS"; fi
+    echo "  item:   $TASK_ITEM"
+    if (( rc != 130 )) && [[ -n "$STOP_REASON" ]]; then echo "  reason: $STOP_REASON"; fi
+    rule
+  fi
   [[ -n "$SNAP" ]] && rm -f "$SNAP"
   [[ -n "$SKILLSNAP" ]] && rm -f "$SKILLSNAP"
   item_end "$ITEM_OUTCOME"
@@ -2162,6 +2439,23 @@ EOF
 fi
 }
 
+branch_clause() {
+  if (( RESUME_ACTIVE )); then
+    cat <<EOT
+You are RESUMING: an earlier session already worked on this item on THIS
+   branch and ended early (an error, a rate limit, a crash). Before anything
+   else look at what exists:  git log --oneline origin/$BASE_BRANCH..HEAD ;
+   git status ; git diff origin/$BASE_BRANCH...HEAD . Continue from there — do
+   not redo finished work and do not start over. If a pull request is already
+   open for this branch, push to it instead of opening another. Stay on this
+   branch; never switch to or touch $BASE_BRANCH.
+EOT
+  else
+    echo 'You are already on a fresh work branch created for this session — stay on'
+    echo '   it. Skip any "create a branch" step; never switch to or touch main.'
+  fi
+}
+
 prompt_item() {
 cat <<EOF
 Your task for this session is exactly this item from PLAN.md:
@@ -2178,8 +2472,7 @@ EOF
 cat <<EOF
 Do this:
 
-0. You are already on a fresh work branch created for this session — stay on
-   it. Skip any "create a branch" step; never switch to or touch main.
+0. $(branch_clause)
 1. Implement only that item. Do not start any other item and do not refactor
    unrelated code.
 2. Write or extend tests that prove it works.
@@ -2618,8 +2911,55 @@ watch_for_items() {
   done
 }
 
+# --resume: find the work branch, switch to it, take back what the failed run
+# stashed, and work out which plan item it was doing (the one the branch
+# ticked that the default branch still shows open).
+resume_prepare() {
+  local br="$RESUME_BRANCH" cur stash baseplan
+  cur="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -z "$br" ]]; then
+    if [[ -n "$cur" && "$cur" != "$BASE_BRANCH" && "$cur" != HEAD ]]; then br="$cur"
+    else br="$(git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads/agent/ 2>/dev/null | head -1)"; fi
+  fi
+  [[ -n "$br" ]] || die "--resume: no work branch to continue. Kept branches are listed by:  git branch --list 'agent/*'
+Name one:  ./run.sh --resume <branch>"
+  git rev-parse -q --verify "refs/heads/$br" >/dev/null 2>&1 || die "--resume: there is no local branch '$br'"
+  [[ "$br" != "$BASE_BRANCH" ]] || die "--resume needs a work branch, not $BASE_BRANCH"
+  if [[ "$cur" != "$br" ]]; then
+    # the dirty-tree guard is off for --resume (leftovers on the work branch
+    # are expected), but changes elsewhere must not travel onto it
+    [[ -z "$(git status --porcelain 2>/dev/null)" ]] \
+      || die "working tree is not clean — commit or stash before --resume switches to $br.
+(Already on $br? Then just run ./run.sh --resume.)  See:  git status"
+    git switch "$br" --quiet 2>/dev/null || die "--resume: could not switch to $br — commit or stash your changes first"
+  fi
+  stash="$(git stash list --format='%gd %s' 2>/dev/null | awk -v m="agentloop: leftovers from $br" 'length($0) >= length(m) && substr($0, length($0) - length(m) + 1) == m { print $1; exit }')"
+  if [[ -n "$stash" ]]; then
+    git stash pop --quiet "$stash" >/dev/null 2>&1 \
+      && info "restored the uncommitted leftovers the failed run had stashed" \
+      || die "--resume: could not re-apply the stashed leftovers ($stash) — resolve with:  git stash pop"
+  fi
+  git fetch origin "$BASE_BRANCH" --quiet >/dev/null 2>&1 || true
+  baseplan="$(mktemp "${TMPDIR:-/tmp}/agentloop-baseplan.XXXXXX")"
+  git show "origin/$BASE_BRANCH:$PLAN" > "$baseplan" 2>/dev/null \
+    || git show "$BASE_BRANCH:$PLAN" > "$baseplan" 2>/dev/null || true
+  RESUME_ITEM="$(awk '
+    NR == FNR { if ($0 ~ /^[[:space:]]*- \[ \]/) { t = $0; sub(/^[[:space:]]*- \[ \][[:space:]]*/, "", t); open[t] = 1 } next }
+    $0 ~ /^[[:space:]]*- \[[xX]\]/ { t = $0; sub(/^[[:space:]]*- \[[xX]\][[:space:]]*/, "", t); if (t in open) { print t; exit } }' \
+    "$baseplan" "$PLAN" 2>/dev/null)"
+  cp "$baseplan" "$SNAP"; rm -f "$baseplan"
+  [[ -n "$RESUME_ITEM" ]] || die "--resume: $br has no plan item ticked that $BASE_BRANCH still shows open, so there is nothing to continue.
+(A branch from --task / --issue: stay on it and run  ./run.sh --task \"continue ...\")"
+  WORK_BRANCH="$br"
+  BRANCH_BASE="$(git merge-base HEAD "origin/$BASE_BRANCH" 2>/dev/null || git merge-base HEAD "$BASE_BRANCH" 2>/dev/null || true)"
+  RESUME_ACTIVE=1
+  info "resuming on $br: $RESUME_ITEM"
+}
+if (( RESUME )); then resume_prepare; fi
+
 for (( i = 1; i <= COUNT; i++ )); do
   route_restore
+  (( i > 1 )) && RESUME_ACTIVE=0
   # Between items: honour ./run.sh --stop and the --max-cost budget.
   if (( i > 1 )); then
     if [[ -f "$STOP_FILE" ]]; then
@@ -2632,12 +2972,20 @@ for (( i = 1; i <= COUNT; i++ )); do
       break
     fi
   fi
-  git switch "$BASE_BRANCH" --quiet 2>/dev/null || true
-  git_pull_c
-
-  before_remaining="$(plan_remaining)"
-  before_done="$(plan_done_count)"
-  cp "$PLAN" "$SNAP" 2>/dev/null || true
+  if (( RESUME_ACTIVE )); then
+    # Counts come from the default branch's plan (saved in $SNAP): this
+    # branch already shows the item ticked.
+    _plan_save="$PLAN"; PLAN="$SNAP"
+    before_remaining="$(plan_remaining)"; before_done="$(plan_done_count)"
+    resume_details="$(plan_details_for "$RESUME_ITEM")"
+    PLAN="$_plan_save"
+  else
+    git switch "$BASE_BRANCH" --quiet 2>/dev/null || true
+    git_pull_c
+    before_remaining="$(plan_remaining)"
+    before_done="$(plan_done_count)"
+    cp "$PLAN" "$SNAP" 2>/dev/null || true
+  fi
   skills_list > "$SKILLSNAP" 2>/dev/null || true
 
   if [[ "$before_remaining" -eq 0 ]]; then
@@ -2670,8 +3018,8 @@ for (( i = 1; i <= COUNT; i++ )); do
     break
   fi
 
-  item="$(plan_next)"
-  details="$(plan_details)"
+  if (( RESUME_ACTIVE )); then item="$RESUME_ITEM"; details="$resume_details"
+  else item="$(plan_next)"; details="$(plan_details)"; fi
   route_restore
   route_apply "$details"
   details="$(strip_route_lines "$details")"
@@ -2683,13 +3031,17 @@ for (( i = 1; i <= COUNT; i++ )); do
   [[ -n "$details" ]] && printf '%s\n' "$details" | sed 's/^/  /'
   rule
 
+  TASK_POS="TASK $i/$( [[ "$COUNT" -ge 9999 ]] && echo all || echo "$COUNT" )"
+  TASK_ITEM="$item"
   item_begin item "$item"
   graph_sync
   graphctx="$(graph_context "$item")"
   [[ -n "$graphctx" ]] && info "graph: prompt seeded with $(printf '%s\n' "$graphctx" | wc -l | tr -d ' ') lines of context"
   while :; do
-    new_work_branch "agent" "$item"
-    tick_item_on_branch "$item"
+    if (( ! RESUME_ACTIVE )); then
+      new_work_branch "agent" "$item"
+      tick_item_on_branch "$item"
+    fi
     run_agent "$(prompt_item "$item" "$details" "$graphctx")"
     # Verify against GitHub first: a PR for this branch = work definitely
     # happened, whatever the local ref view claims.
@@ -2733,6 +3085,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     if (( WAIT )); then stop_for_flagged_pr "$pr"; exit 1; fi
     info "PR #$pr is labelled '$PR_FLAG' — it needs a human (continuing: --no-wait)"
     item_end blocked
+    task_banner stop "PR #$pr needs a human ($PR_FLAG)"
     continue
   fi
 
@@ -2740,12 +3093,13 @@ for (( i = 1; i <= COUNT; i++ )); do
     info "--no-wait: continuing without waiting for the merge"
     info "note: PLAN.md on $BASE_BRANCH is stale, so the next item may repeat"
     item_end opened
+    task_banner stop "PR #$pr opened, not waiting (--no-wait)"
     continue
   fi
 
   await_merge_and_autofix "$pr" "$item"
   case "$AWAIT_RC" in
-    0) item_end merged ;;
+    0) item_end merged; task_banner ok "merged (PR #$pr)" ;;
     3) fb="$(gh_c pr view "$pr" --json headRefName -q .headRefName 2>/dev/null || echo '<branch>')"
        echo
        echo "STOPPING: CI is still failing on PR #$pr after $AWAIT_FIXES automatic fix attempt(s)."
@@ -2828,6 +3182,7 @@ for (( i = 1; i <= COUNT; i++ )); do
     exit 1
   fi
 done
+TASK_POS=""
 
 git switch "$BASE_BRANCH" --quiet 2>/dev/null || true
 git_pull_c

@@ -55,6 +55,15 @@
 - [ ] Add Edit/Write deny rules for .agents/skills/agentloop-*/** to template/.claude/settings.json and assert them in tests/install-test.sh
 - [ ] Add Gemini CLI as a fourth engine per docs/ENGINES.md, with stream fixtures recorded from a real session
 
+## Milestone 7: Operating on free tiers
+
+- [x] Show the task position (TASK i/N) in task results and when a run stops or is interrupted
+- [x] Add --resume [BRANCH] to continue an item on the work branch a failed run kept
+- [x] Read the last line of .agentloop.local even without a trailing newline; accept quoted values; warn on unknown keys
+- [x] Give every setting a CLI form: --set KEY=VALUE, on/off flag pairs, --small-model, --base-branch, --graph-budget
+- [x] Add SMALL_MODEL (opencode small_model via inline config, Claude's haiku slot)
+- [x] Add RPM/RPD/TPM/TPD/ITPM/OTPM rate limits that pause the session container instead of hitting a 429
+
 ## Discovered
 
 <!-- Work the agent found while building. Promote with ./run.sh --replan. -->

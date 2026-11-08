@@ -494,6 +494,29 @@ echo "$old_out" | grep -q "skipped    .agents/skills/agentloop-ci-fix/SKILL.md" 
 [[ -e "$TMP/onlysk/.agents" ]] && fail "--uninstall left an empty .agents/ behind"
 "$ROOT/install.sh" . >/dev/null 2>&1 || fail "reinstall after skills uninstall failed"
 
+# ── 13d. Rate-limit arithmetic ───────────────────────────────────────────────
+# shellcheck disable=SC2034  # read by the eval'd functions
+RPM=0 RPD=0 TPM=0 TPD=0 ITPM=0 OTPM=0
+RATE_WHY=""
+mkdir -p "$TMP/rate" && cd "$TMP/rate"
+RATE_LEDGER="$TMP/rate/ledger"
+eval "$(sed -n '/^rate_wait_for()/,/^}$/p;/^rate_wait_secs()/,/^}$/p' "$TMP/proj/run.sh")"
+now="$(date +%s)"
+printf '%s\n' "$((now - 50)) 100 10" "$((now - 20)) 300 30" > "$RATE_LEDGER"
+w="$(rate_wait_for req 60 2 1)"
+[[ "$w" -ge 10 && "$w" -le 12 ]] || fail "rate: 2 requests in the last minute, RPM 2 — expected ~11s, got $w"
+[[ "$(rate_wait_for req 60 3 1)" == 0 ]] || fail "rate: RPM 3 still has room for one more"
+[[ "$(rate_wait_for in 60 500 150)" -gt 0 ]] || fail "rate: 400 input tokens + 150 expected must wait under ITPM 500"
+[[ "$(rate_wait_for in 60 600 150)" == 0 ]] || fail "rate: ITPM 600 fits 400 + 150"
+[[ "$(rate_wait_for out 60 40 20)" -gt 0 ]] || fail "rate: OTPM 40 cannot fit 40 + 20"
+[[ "$(rate_wait_for tok 60 100 500)" == 0 ]] || fail "rate: one request larger than the limit must not wait forever"
+RPM=0; TPM=450
+r="$(rate_wait_secs 100 50)"
+[[ "${r%%|*}" -gt 0 && "${r#*|}" == "TPM (450)" ]] || fail "rate: wait_secs gave '$r'"
+: > "$RATE_LEDGER"
+[[ "$(rate_wait_secs 1 1)" == "0|" ]] || fail "rate: an empty ledger must never wait"
+cd "$TMP"
+
 # ── 14. The loop itself, end to end ──────────────────────────────────────────
 # Stubbed docker/gh/keychain/engine, real git against a bare "GitHub" repo.
 # Chained from here so CI runs it without a workflow change.

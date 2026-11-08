@@ -59,6 +59,7 @@ case "${1:-}" in
       case "$a" in agentloop.dockerfile=*) echo "${a#agentloop.dockerfile=}" > "$FAKE_STATE/image_label" ;; esac
     done
     exit 0 ;;
+  pause|unpause) echo "$1 $2" >> "$FAKE_STATE/docker_pauses"; exit 0 ;;
   ps|kill|inspect|volume) exit 0 ;;
   run)
     shift
@@ -98,6 +99,10 @@ cat > "$STUBS/sleep" <<'STUB'
 #!/usr/bin/env bash
 # no real waiting; a test can leave a one-shot hook that runs "while the loop sleeps"
 echo "$*" >> "${FAKE_STATE:-/dev/null}/sleeps"
+# time passes for the rate-limit ledger too: age every entry by the slept seconds
+if [[ -s logs/.rate-usage && "${1:-}" =~ ^[0-9]+$ ]]; then
+  awk -v d="$1" '{ $1 -= d; print }' logs/.rate-usage > logs/.rate-usage.tmp && mv logs/.rate-usage.tmp logs/.rate-usage
+fi
 if [[ -x "${FAKE_STATE:-/nonexistent}/on_sleep" ]]; then
   hook="$FAKE_STATE/on_sleep"; mv "$hook" "$hook.done"; "$hook.done"; [[ $? == 3 ]] && mv "$hook.done" "$hook"
 fi
@@ -297,6 +302,7 @@ seq=$(( $(cat "$FAKE_STATE/engine_seq" 2>/dev/null || echo 0) + 1 ))
 echo "$seq" > "$FAKE_STATE/engine_seq"
 printf '%s\n' "$prompt" > "$FAKE_STATE/prompt_$seq.txt"
 echo "$engine ${model:-default}" >> "$FAKE_STATE/engine_calls"
+printf '%s|%s\n' "${OPENCODE_CONFIG_CONTENT:-}" "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}" >> "$FAKE_STATE/engine_env"
 
 tool() {
   if [[ "$engine" == claude ]]; then
@@ -453,6 +459,8 @@ new_project happy
 run_sh -n 2
 [[ "$RC" == 0 ]] || fail "happy path exited $RC"
 expect_out "completed:     2 item(s)"
+expect_out "✓ TASK 1/2 — merged (PR #1)" "task position after the first item"
+expect_out "✓ TASK 2/2 — merged" "task position after the second item"
 remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null  || fail "first item not ticked on main"
 remote_plan | grep -x -- "- \[x\] Add the second feature" >/dev/null || fail "second item not ticked on main"
 [[ "$(on_branch)" == "main" ]] || fail "not back on main after the loop"
@@ -496,6 +504,8 @@ export FAKE_BAD_MODELS="default"
 run_sh
 [[ "$RC" == 1 ]] || fail "empty session: expected exit 1, got $RC"
 expect_out "STOPPING: no PR was opened and no commits are visible"
+expect_out "✖ stopped during TASK 1/1" "position of a failed task"
+expect_out "reason: a session produced no commits" "reason repeated at the bottom"
 [[ "$(on_branch)" == "main" ]] || fail "empty session: not back on main"
 [[ -z "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "empty session: branch not cleaned up"
 [[ "$(last_outcome)" == "no-pr" ]] || fail "empty session: history outcome is '$(last_outcome)'"
@@ -973,5 +983,115 @@ run_sh -n all --watch 1
 expect_out "--watch: new items landed"
 expect_out "ending the watch"
 remote_plan | grep -x -- "- \[x\] Item that landed later" >/dev/null || fail "watch: the item that landed later was not done"
+
+# ── 31. Settings: last line without newline, quotes, --set, unknown keys ─────
+new_project settings-file
+printf '%s\n' 'VERIFY_CMD="test -f verify-ok.txt"' > "$PROJ/.agentloop.local"
+printf '%s' 'GIT_GUARD=maybe' >> "$PROJ/.agentloop.local"          # no trailing newline
+run_sh --next
+[[ "$RC" == 1 ]] || fail "the last line of .agentloop.local was not read without a trailing newline (RC $RC)"
+expect_out "GIT_GUARD must be 1 or 0"
+printf '%s\n' 'VERIFY_CMD="test -f verify-ok.txt"' 'GIT_GUARD=0' > "$PROJ/.agentloop.local"
+printf '%s' 'WATCH_MIN=0' >> "$PROJ/.agentloop.local"
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "settings file with quotes: exited $RC"
+expect_out "verify: test -f verify-ok.txt"            # quotes stripped
+printf '%s\n' 'GIT_GUARD=0' 'NOPE_SETTING=1' > "$PROJ/.agentloop.local"
+run_sh --next
+expect_out "ignoring unknown setting 'NOPE_SETTING'"
+run_sh --next --set NOPE=1
+[[ "$RC" == 1 ]] || fail "--set with an unknown key must fail"
+expect_out "unknown setting 'NOPE'"
+run_sh --next --set GIT_GUARD
+[[ "$RC" == 1 ]] || fail "--set without =VALUE must fail"
+printf '%s\n' 'LEARN=0' > "$PROJ/.agentloop.local"
+run_sh --next --learn --set CI_RETRIES=two
+expect_out "CI_RETRIES must be a whole number"        # --set values are validated like flags
+
+# ── 32. SMALL_MODEL reaches opencode (inline config) and claude (haiku slot) ──
+new_project small-model
+run_sh -n 1 --small-model vendor/cheap
+[[ "$RC" == 0 ]] || fail "small model (opencode): exited $RC"
+grep -q '"small_model":"vendor/cheap"' "$FAKE_STATE/engine_env" || fail "small model: opencode config missing: $(cat "$FAKE_STATE/engine_env")"
+new_project small-claude
+printf '%s\n' 'SMALL_MODEL=claude-haiku-x' > "$PROJ/.agentloop.local"
+run_sh -n 1 --engine claude
+[[ "$RC" == 0 ]] || fail "small model (claude): exited $RC"
+grep -q '|claude-haiku-x$' "$FAKE_STATE/engine_env" || fail "small model: claude haiku slot missing"
+run_sh --next --small-model 'bad model;x'
+[[ "$RC" == 1 ]] || fail "a small model with odd characters must be refused"
+
+# ── 33. Rate limits: defaults unlimited; RPM/TPM pause the container; ledger persists
+new_project rate-off
+run_sh -n 1
+[[ ! -e "$FAKE_STATE/docker_pauses" ]] || fail "no limits set, yet a container was paused"
+[[ ! -e "$PROJ/logs/.rate-usage" ]] || fail "no limits set, yet a usage ledger was written"
+new_project rate-rpm
+run_sh -n 1 --rpm 1
+[[ "$RC" == 0 ]] || fail "rpm: exited $RC"
+expect_out "rate limit RPM (1): waiting"
+grep -qx 'pause agentloop-*' "$FAKE_STATE/docker_pauses" 2>/dev/null || grep -q '^pause ' "$FAKE_STATE/docker_pauses" || fail "rpm: container was not paused"
+grep -q '^unpause ' "$FAKE_STATE/docker_pauses" || fail "rpm: container was not unpaused"
+[[ -s "$PROJ/logs/.rate-usage" ]] || fail "rpm: usage ledger missing"
+new_project rate-tpm
+run_sh -n 1 --tpm 2000
+[[ "$RC" == 0 ]] || fail "tpm: exited $RC"
+expect_out "rate limit TPM (2000): waiting"
+new_project rate-itpm
+run_sh -n 1 --itpm 2000 --otpm 100000
+expect_out "rate limit ITPM (2000): waiting"
+reject_out "OTPM"
+# a daily budget already spent in an earlier run holds before the session starts
+new_project rate-rpd
+mkdir -p "$PROJ/logs"
+echo "$(( $(date +%s) - 86300 )) 10 10" > "$PROJ/logs/.rate-usage"
+run_sh -n 1 --rpd 1
+[[ "$RC" == 0 ]] || fail "rpd: exited $RC"
+expect_out "rate limit RPD (1): waiting"
+[[ ! -e "$FAKE_STATE/docker_pauses" ]] || [[ "$(head -1 "$FAKE_STATE/engine_calls" | wc -l | tr -d ' ')" == 1 ]] || fail "rpd: unexpected"
+run_sh --doctor --rpd 5 >/dev/null 2>&1 || true
+expect_out "rate limits: RPM=0 RPD=5"
+
+# ── 34. --resume: continue an item on the branch a failed run kept ──────────
+new_project resume
+(cd "$PROJ" && git switch -q -c agent/add-the-first-feature-0101000000 \
+  && sed -i.bak 's/^- \[ \] Add the first feature/- [x] Add the first feature/' PLAN.md && rm -f PLAN.md.bak \
+  && git commit -qam "chore: tick plan item (loop-managed; lands only when this PR merges)" \
+  && echo "half done" > partial.txt && git add partial.txt && git commit -qm "feat: first half" \
+  && echo "unsaved" > leftover.txt \
+  && git stash push -u -q -m "agentloop: leftovers from agent/add-the-first-feature-0101000000" \
+  && git switch -q main)
+run_sh --resume
+[[ "$RC" == 0 ]] || fail "resume: exited $RC"
+expect_out "resuming on agent/add-the-first-feature-0101000000: Add the first feature"
+expect_out "restored the uncommitted leftovers"
+grep -q "RESUMING: an earlier session" "$FAKE_STATE/prompt_1.txt" || fail "resume: the prompt does not say it is a resumption"
+grep -q "accept a --name flag" "$FAKE_STATE/prompt_1.txt" || fail "resume: item details missing from the prompt"
+expect_out "✓ TASK 1/1 — merged"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "resume: item not ticked on main after the merge"
+git --git-dir="$FAKE_REMOTE" ls-tree -r --name-only main | grep -qx partial.txt || fail "resume: the earlier session's work did not land"
+[[ "$(on_branch)" == "main" ]] || fail "resume: not back on main"
+# naming the branch from main; a missing branch or a wrong mode is refused
+new_project resume-named
+(cd "$PROJ" && git switch -q -c agent/other-0102000000 \
+  && sed -i.bak 's/^- \[ \] Add the first feature/- [x] Add the first feature/' PLAN.md && rm -f PLAN.md.bak \
+  && git commit -qam "chore: tick plan item" && git switch -q main)
+run_sh --resume agent/does-not-exist
+[[ "$RC" == 1 ]] || fail "resume: a missing branch must be refused"
+expect_out "there is no local branch"
+run_sh --resume --task "x"
+[[ "$RC" == 1 ]] || fail "resume with --task must be refused"
+echo "unrelated" > "$PROJ/dirt.txt"
+run_sh --resume agent/other-0102000000
+[[ "$RC" == 1 ]] || fail "resume must refuse to carry unrelated changes onto the work branch"
+expect_out "working tree is not clean"
+rm -f "$PROJ/dirt.txt"
+run_sh --resume agent/other-0102000000 -n 1
+[[ "$RC" == 0 ]] || fail "resume by name: exited $RC"
+git --git-dir="$FAKE_REMOTE" log --format=%s main | grep "feat: work on agent-other" >/dev/null || fail "resume by name: no work landed"
+new_project resume-none
+run_sh --resume
+[[ "$RC" == 1 ]] || fail "resume with no work branch must be refused"
+expect_out "no work branch to continue"
 
 echo "loop-test OK"
