@@ -52,8 +52,8 @@
 - [x] Route single items to another engine or model with a detail line (e.g. "engine: claude", "model: vendor/x")
 - [x] Add an optional --review session: a second model reviews the PR diff and requests changes before the PR is labelled automated
 - [x] When a session committed but opened no PR, push and open it from bash with the blocked label instead of stopping
-- [ ] Add Edit/Write deny rules for .agents/skills/agentloop-*/** to template/.claude/settings.json and assert them in tests/install-test.sh
-- [ ] Add Gemini CLI as a fourth engine per docs/ENGINES.md, with stream fixtures recorded from a real session
+- [x] Add Edit/Write deny rules for .agents/skills/agentloop-*/** to template/.claude/settings.json and assert them in tests/install-test.sh
+- [ ] Add a fourth engine per docs/ENGINES.md with stream fixtures recorded from a real session (blocked, needs a human with a live key: Gemini CLI headless offers `--output-format stream-json` with init/message/tool_use/tool_result/error/result events, but Google announced on 2026-06-18 that unpaid-tier users move to Antigravity CLI — decide which CLI to target first)
 
 ## Milestone 7: Operating on free tiers
 

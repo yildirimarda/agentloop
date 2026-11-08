@@ -135,6 +135,8 @@ assert "Bash(ls)" in d["permissions"]["allow"], "user allow lost"
 assert "Bash(rm -rf /)" in d["permissions"]["deny"], "user deny lost"
 assert "Bash(terraform apply)" in d["permissions"]["deny"], "template deny not merged"
 assert d.get("other") == "keep-me", "unrelated key lost"
+for rule in ("Edit(.agents/skills/agentloop-*/**)", "Write(.agents/skills/agentloop-*/**)", "Edit(.github/workflows/**)"):
+    assert rule in d["permissions"]["deny"], "template deny missing: " + rule
 PY
 # PLAN.md: authoritative, untouched, no .new
 grep -q "my existing item" PLAN.md           || fail "PLAN.md was modified"
