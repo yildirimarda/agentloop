@@ -43,7 +43,10 @@ same loop — see [the engine contract](docs/ENGINES.md).
 - **It respects free-tier quotas.** `--rpm/--rpd/--tpm/--tpd/--itpm/--otpm` (off
   by default) pause the session container just before a request would break a
   limit instead of failing with a 429. Every run ends with the task it was on
-  (`stopped during TASK 3/5`), and `--resume` continues a kept work branch.
+  (`stopped during TASK 3/5`) plus the exact `--resume` command for its kept
+  work branch (`--resume all` carries on through the rest of the plan). Cached
+  prompt tokens count toward the token limits. `--github-setup --add-check` /
+  `--remove-check` / `--list-checks` change which checks gate auto-merge.
 - **Sessions start oriented.** The knowledge graph's answer for the item is in
   the prompt before the model reads a file; indented item details reach the
   session as acceptance criteria; skills carry the playbooks.

@@ -63,6 +63,10 @@
 - [x] Give every setting a CLI form: --set KEY=VALUE, on/off flag pairs, --small-model, --base-branch, --graph-budget
 - [x] Add SMALL_MODEL (opencode small_model via inline config, Claude's haiku slot)
 - [x] Add RPM/RPD/TPM/TPD/ITPM/OTPM rate limits that pause the session container instead of hitting a 429
+- [x] Count cached prompt tokens (opencode cache.read/write, claude cache_read/creation, codex cached_input_tokens) toward the token limits, with RATE_CACHE=0 / --no-rate-cache to ignore them
+- [x] Print the exact --resume command (branch, stash, all/N) in the kept-branch hint and the closing box of a failed run
+- [x] Accept --resume [BRANCH] [N|all] so a resumed item can be followed by later ones
+- [x] Add --github-setup --list-checks / --add-check / --remove-check to change the required checks without redoing the setup
 
 ## Discovered
 

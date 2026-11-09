@@ -250,11 +250,44 @@ case "${1:-}" in
       "run view "*"--json jobs"*) printf '77\tci\n' ;;
       "run rerun"*) : ;;
     esac ;;
-  repo) [[ "${2:-}" == view ]] && echo "test/repo WRITE" ;;
+  repo)
+    if [[ "${2:-}" == view ]]; then
+      case "$*" in
+        *viewerPermission*)  echo "test/repo WRITE" ;;
+        *nameWithOwner*)     echo "test/repo" ;;
+        *defaultBranchRef*)  echo "${FAKE_BASE:-main}" ;;
+        *)                   echo "test/repo WRITE" ;;
+      esac
+    fi ;;
   label) [[ "${2:-}" == list ]] && printf '%s\n' automated blocked plan ;;
   api)
+    if [[ "${2:-}" == -X ]]; then   # branch-protection writes (setup-github.sh)
+      method="$3"; ep="$4"; shift 4
+      case "$method $ep" in
+        "PUT "*/protection) cat >/dev/null; : > "$FAKE_STATE/protected"; printf 'ci\n' > "$FAKE_STATE/contexts" ;;
+        *required_status_checks/contexts)
+          while [[ $# -gt 0 ]]; do
+            case "$1" in
+              -f) v="${2#contexts\[\]=}"
+                  if [[ "$method" == POST ]]; then
+                    grep -qxF "$v" "$FAKE_STATE/contexts" 2>/dev/null || echo "$v" >> "$FAKE_STATE/contexts"
+                  else
+                    grep -vxF "$v" "$FAKE_STATE/contexts" > "$FAKE_STATE/tmp" || true; mv "$FAKE_STATE/tmp" "$FAKE_STATE/contexts"
+                  fi
+                  shift 2 ;;
+              *) shift ;;
+            esac
+          done ;;
+      esac
+      exit 0
+    fi
     ep="$2"
     case "$ep" in
+      *required_status_checks)
+        [[ -e "$FAKE_STATE/protected" ]] || { echo "gh: Branch not protected (HTTP 404)" >&2; exit 1; }
+        cat "$FAKE_STATE/contexts" 2>/dev/null ;;
+      *actions/runs\?branch=*) echo 99 ;;
+      *actions/runs/99/jobs*) cat "$FAKE_STATE/job_names" 2>/dev/null ;;
       *actions/runs\?per_page=1*) echo 0 ;;
       "repos/{owner}/{repo}") echo "true true" ;;
       *actions/runs\?head_sha=*)
@@ -314,6 +347,8 @@ tool() {
 finish() {
   if [[ "$engine" == claude ]]; then
     printf '{"type":"result","subtype":"success","total_cost_usd":0.25}\n'
+  elif [[ -n "${FAKE_TOKENS_JSON:-}" ]]; then   # a full tokens object, e.g. with cache counts
+    printf '{"type":"step_finish","part":{"tokens":%s,"cost":%s}}\n' "$FAKE_TOKENS_JSON" "${2:-0}"
   else
     printf '{"type":"step_finish","part":{"tokens":{"total":%s},"cost":%s}}\n' "$1" "${2:-0}"
   fi
@@ -435,7 +470,7 @@ PLAN
     git remote set-head origin "$base" >/dev/null 2>&1 || true
   )
   unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN \
-        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK
+        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK FAKE_TOKENS_JSON
 }
 # outcome column of the last history row
 last_outcome() { tail -1 "$PROJ/logs/history.tsv" | cut -f5; }
@@ -497,6 +532,11 @@ reject_out "waiting for PR #1 to merge" "blocked PR should not be waited on"
 [[ "$(on_branch)" == "main" ]] || fail "blocked PR: not back on main"
 [[ -n "$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "blocked PR: work branch was not kept"
 [[ "$(last_outcome)" == "blocked" ]] || fail "blocked PR: history outcome is '$(last_outcome)'"
+# a kept branch says exactly how to continue it (also repeated in the closing box)
+expect_out "CONTINUE it (the usual choice)" "kept branch: resume instructions"
+expect_out "./run.sh --resume agent/" "kept branch: resume command with the branch name"
+expect_out " all     afterwards keep going through the whole plan" "kept branch: resume + all"
+expect_out "  resume: ./run.sh --resume agent/" "resume command repeated in the closing box"
 
 # ── 4. A model that produces nothing → clean stop, branch removed ────────────
 new_project nothing
@@ -1093,5 +1133,90 @@ new_project resume-none
 run_sh --resume
 [[ "$RC" == 1 ]] || fail "resume with no work branch must be refused"
 expect_out "no work branch to continue"
+
+# ── 35. --resume [BRANCH] [N|all]: the resumed item, then on to later ones ───
+# keep_work_branch NAME: leave agent/NAME behind with the first item ticked + half its work
+keep_work_branch() {
+  (cd "$PROJ" && git switch -q -c "agent/$1" \
+    && sed -i.bak 's/^- \[ \] Add the first feature/- [x] Add the first feature/' PLAN.md && rm -f PLAN.md.bak \
+    && git commit -qam "chore: tick plan item (loop-managed; lands only when this PR merges)" \
+    && echo "half done" > partial.txt && git add partial.txt && git commit -qm "feat: first half" \
+    && git switch -q main)
+}
+new_project resume-all
+keep_work_branch add-the-first-feature-0101000000
+run_sh --resume all
+[[ "$RC" == 0 ]] || fail "resume all: exited $RC"
+expect_out "resuming on agent/add-the-first-feature-0101000000"
+expect_out "TASK 1/all"
+expect_out "TASK 2/all" "resume all: the loop did not go on to the next item"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "resume all: first item not ticked"
+remote_plan | grep -x -- "- \[x\] Add the second feature" >/dev/null || fail "resume all: second item not ticked"
+new_project resume-n
+keep_work_branch add-the-first-feature-0101000000
+run_sh --resume agent/add-the-first-feature-0101000000 2
+[[ "$RC" == 0 ]] || fail "resume BRANCH N: exited $RC"
+expect_out "TASK 2/2" "resume BRANCH N: count not applied"
+new_project resume-n-flag
+keep_work_branch add-the-first-feature-0101000000
+run_sh --resume -n 1
+[[ "$RC" == 0 ]] || fail "resume -n 1: exited $RC"
+reject_out "TASK 2/" "resume -n 1: must stop after the resumed item"
+remote_plan | grep -x -- "- \[ \] Add the second feature" >/dev/null || fail "resume -n 1: second item must stay open"
+
+# ── 36. Rate limits count cached prompt tokens (opencode: tokens.cache) ─────
+new_project rate-cache
+export FAKE_TOKENS_JSON='{"input":100,"output":50,"cache":{"read":5000,"write":200}}'
+run_sh -n 1 --tpm 1000000
+[[ "$RC" == 0 ]] || fail "rate cache: exited $RC"
+grep -q ' 5300 50$' "$PROJ/logs/.rate-usage" || fail "rate cache: cached tokens missing from the ledger ($(tail -1 "$PROJ/logs/.rate-usage"))"
+new_project rate-nocache
+export FAKE_TOKENS_JSON='{"input":100,"output":50,"cache":{"read":5000,"write":200}}'
+run_sh -n 1 --tpm 1000000 --no-rate-cache
+[[ "$RC" == 0 ]] || fail "rate cache off: exited $RC"
+grep -q ' 100 50$' "$PROJ/logs/.rate-usage" || fail "rate cache off: --no-rate-cache still counted the cache ($(tail -1 "$PROJ/logs/.rate-usage"))"
+unset FAKE_TOKENS_JSON
+run_sh --set RATE_CACHE=maybe --next
+[[ "$RC" == 1 ]] || fail "RATE_CACHE=maybe must be refused"
+expect_out "RATE_CACHE must be 1 or 0"
+
+# ── 37. --github-setup --list-checks / --add-check / --remove-check ─────────
+new_project ghchecks
+: > "$FAKE_STATE/protected"
+printf '%s\n' ci > "$FAKE_STATE/contexts"
+printf '%s\n' ci lint msrv "rust (ubuntu-latest)" > "$FAKE_STATE/job_names"
+run_sh --github-setup --list-checks
+[[ "$RC" == 0 ]] || fail "list-checks: exited $RC"
+expect_out "required on main"
+expect_out "  - ci"
+expect_out "reporting on main, not required"
+expect_out "  - lint"
+run_sh --github-setup --add-check "lint, rust (ubuntu-latest)"
+[[ "$RC" == 0 ]] || fail "add-check: exited $RC"
+expect_out "OK  added"
+grep -qxF "lint" "$FAKE_STATE/contexts" && grep -qxF "rust (ubuntu-latest)" "$FAKE_STATE/contexts" || fail "add-check: contexts not added"
+grep -qx ci "$FAKE_STATE/contexts" || fail "add-check: the existing check was lost"
+run_sh --github-setup --add-check lint
+expect_out "already required: lint"
+run_sh --github-setup --add-check ghost
+[[ "$RC" == 1 ]] || fail "add-check: a check that never reported must be refused"
+expect_out "no check named 'ghost'"
+grep -qxF "ghost" "$FAKE_STATE/contexts" && fail "add-check: ghost was added anyway"
+run_sh --github-setup --remove-check lint
+[[ "$RC" == 0 ]] || fail "remove-check: exited $RC"
+expect_out "OK  removed"
+grep -qxF "lint" "$FAKE_STATE/contexts" && fail "remove-check: lint is still required"
+grep -qx ci "$FAKE_STATE/contexts" || fail "remove-check: removed more than asked"
+run_sh --github-setup --remove-check nothere
+expect_out "not required (nothing to remove): nothere"
+run_sh --github-setup --add-check a --remove-check b
+[[ "$RC" == 1 ]] || fail "add + remove together must be refused"
+expect_out "cannot be combined"
+run_sh --github-setup --add-check
+[[ "$RC" == 1 ]] || fail "--add-check without a name must be refused"
+rm -f "$FAKE_STATE/protected"
+run_sh --github-setup --list-checks
+[[ "$RC" == 1 ]] || fail "list-checks without protection must be refused"
+expect_out "no branch protection"
 
 echo "loop-test OK"

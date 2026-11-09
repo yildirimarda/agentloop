@@ -132,6 +132,14 @@ only has to emit a usage-bearing event per request: opencode `step_finish`
 `assistant` messages (`.message.usage`, once per `.message.id`). A new engine
 extends the jq program in `rate_gate`.
 
+Cached prompt tokens count as input by default (`RATE_CACHE=1`; providers meter
+the whole prompt, and a long agent session is mostly cache reads). Engines
+report them differently, and `rate_gate` normalises: opencode adds
+`tokens.cache.read` + `.write` to `input`, claude adds `cache_read_input_tokens`
++ `cache_creation_input_tokens`, codex's `input_tokens` already contains
+`cached_input_tokens` (subtracted when `RATE_CACHE=0`). Turn it off for APIs
+where cache reads are free, such as Anthropic's ITPM.
+
 Claude's first event per message can carry a provisional `output_tokens`, so
 OTPM / TPM / TPD are conservative-low for that engine (ITPM and the request
 limits are exact).

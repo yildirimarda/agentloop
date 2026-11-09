@@ -266,8 +266,8 @@ grep -q "agentloop.run" run.sh       || fail "run.sh does not label its containe
 mkdir -p "$TMP/kb" && cd "$TMP/kb"
 git init -q -b main . && git commit -q --allow-empty -m init
 git switch -q -c agent/demo && echo x > f.txt && git add f.txt && git commit -q -m work && echo y > dirty.txt
-# shellcheck disable=SC2034  # read by the eval'd keep_branch_and_return
-BASE_BRANCH=main
+# shellcheck disable=SC2034  # read and set by the eval'd keep_branch_and_return
+BASE_BRANCH=main MODE=plan KEPT_BRANCH=""
 eval "$(sed -n '/^keep_branch_and_return()/,/^}$/p' "$TMP/proj/run.sh")"
 kb_out="$(keep_branch_and_return "CI failing" 7)"
 [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || fail "keep_branch_and_return: not back on main"
@@ -277,6 +277,8 @@ git rev-parse --verify -q agent/demo >/dev/null     || fail "keep_branch_and_ret
 echo "$kb_out" | grep -q "git switch agent/demo"    || fail "keep_branch_and_return: missing inspect hint"
 echo "$kb_out" | grep -q "start again from main" || fail "keep_branch_and_return: missing restart hint"
 echo "$kb_out" | grep -q "gh pr close 7"            || fail "keep_branch_and_return: missing PR close hint"
+echo "$kb_out" | grep -q "./run.sh --resume agent/demo all" || fail "keep_branch_and_return: missing resume-all hint"
+echo "$kb_out" | grep -q "re-applies the stashed leftovers"  || fail "keep_branch_and_return: resume hint does not mention the stash"
 # ci_fail_log: per-job log, noise stripped, retried when the first pass is empty
 mkdir -p "$TMP/cf" && cd "$TMP/cf"
 info() { echo "  $*"; }
@@ -521,6 +523,28 @@ r="$(rate_wait_secs 100 50)"
 [[ "${r%%|*}" -gt 0 && "${r#*|}" == "TPM (450)" ]] || fail "rate: wait_secs gave '$r'"
 : > "$RATE_LEDGER"
 [[ "$(rate_wait_secs 1 1)" == "0|" ]] || fail "rate: an empty ledger must never wait"
+# Cached prompt tokens: what each engine's usage event adds up to in the ledger.
+if command -v jq >/dev/null 2>&1; then
+  eval "$(sed -n '/^rate_gate()/,/^}$/p' "$TMP/proj/run.sh")"
+  rate_record() { echo "$1 $2" >> "$TMP/rate/seen"; }
+  rate_hold() { :; }
+  gate_lines() {   # RATE_CACHE value; stdin = engine events → prints "in out" per request
+    # shellcheck disable=SC2034  # read by the eval'd rate_gate
+    RATE_CACHE="$1"; : > "$TMP/rate/seen"; rate_gate >/dev/null; cat "$TMP/rate/seen"
+  }
+  oc='{"type":"step_finish","part":{"tokens":{"input":100,"output":50,"cache":{"read":5000,"write":200},"total":5350}}}'
+  cx='{"type":"turn.completed","usage":{"input_tokens":6000,"cached_input_tokens":5000,"output_tokens":40}}'
+  cl='{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":10,"cache_read_input_tokens":4000,"cache_creation_input_tokens":300,"output_tokens":20}}}'
+  ol='{"type":"step_finish","part":{"tokens":{"total":900}}}'
+  [[ "$(printf '%s\n' "$oc" | gate_lines 1)" == "5300 50" ]] || fail "rate cache: opencode cache read+write must count as input"
+  [[ "$(printf '%s\n' "$oc" | gate_lines 0)" == "100 50"  ]] || fail "rate cache: RATE_CACHE=0 must ignore opencode cache tokens"
+  [[ "$(printf '%s\n' "$cx" | gate_lines 1)" == "6000 40" ]] || fail "rate cache: codex input already includes the cache"
+  [[ "$(printf '%s\n' "$cx" | gate_lines 0)" == "1000 40" ]] || fail "rate cache: RATE_CACHE=0 must subtract codex cached tokens"
+  [[ "$(printf '%s\n' "$cl" | gate_lines 1)" == "4310 20" ]] || fail "rate cache: claude cache read+creation must count as input"
+  [[ "$(printf '%s\n' "$cl" | gate_lines 0)" == "10 20"   ]] || fail "rate cache: RATE_CACHE=0 must ignore claude cache tokens"
+  [[ "$(printf '%s\n' "$ol" | gate_lines 1)" == "900 0"   ]] || fail "rate cache: a total-only event must still be recorded"
+  unset -f rate_record rate_hold gate_lines rate_gate
+fi
 cd "$TMP"
 
 # ── 14. The loop itself, end to end ──────────────────────────────────────────

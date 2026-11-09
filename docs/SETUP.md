@@ -668,6 +668,21 @@ What it did:
 - **Three labels:** `automated` (auto-merge when green), `blocked` (agent got
   stuck), `plan` (plan change, review it yourself).
 
+Only `ci` is required by default, so a second workflow (golden renders, a
+matrix of OS jobs, a linter) does **not** hold up auto-merge. Add what should
+gate merges afterwards, without redoing the setup:
+
+```
+./run.sh --github-setup --list-checks               # what is required, what only reports
+./run.sh --github-setup --add-check "rust (ubuntu-latest),msrv"
+./run.sh --github-setup --remove-check msrv
+```
+
+Names are the job names exactly as GitHub shows them (matrix jobs include the
+matrix value). Only require jobs that run on **every** pull request: one that
+never reports on a PR blocks it forever, which is why `--add-check` refuses a
+name that has not reported on `main`.
+
 Zero required reviews sounds alarming but it's the point: CI is the gate, not a
 human. If you'd rather approve each PR, set
 `required_pull_request_reviews[required_approving_review_count]=1` — but then the
@@ -1208,6 +1223,9 @@ keeps going empty is easy to spot and drop.
 | `./run.sh --build` | Build the agent image, stamped with the `Dockerfile.agent` hash so runs warn when it is stale |
 | `./run.sh --reindex` | Rebuild the Graphify graph from scratch |
 | `./run.sh --github-setup` | Branch protection + auto-merge + labels, from inside the container (`gh-admin` keychain token) |
+| `./run.sh --github-setup --list-checks` | Which checks `main` requires, and which report on `main` without being required (merge does not wait for those). Names a required check that has not reported lately, since a wrong name blocks every PR |
+| `./run.sh --github-setup --add-check "a,b"` | Require more checks later (a matrix job, `golden`…) without redoing the setup. Uses the status-check contexts API, so nothing else about the protection changes. Refuses a name that never reported on `main` |
+| `./run.sh --github-setup --remove-check "a,b"` | Stop requiring them. Needs protection to exist already (on a private repo under the Free plan GitHub does not offer it) |
 | `./run.sh --help` | All flags |
 
 | Flag | Default | Use when |
@@ -1232,11 +1250,11 @@ keeps going empty is easy to spot and drop.
 | `--no-graph` | off | Graphify is misbehaving |
 | `--no-graph-context` | off | Don't put the graph's answer for the item into the prompt (`GRAPH_CONTEXT=0`) |
 | `--image NAME` | `agent` | You keep multiple container variants |
-| `--resume [BRANCH]` | off | A run failed and kept its work branch (`agent/...`). Continue the item instead of starting from `main`: switches to the branch (default: the one checked out, else the newest `agent/` branch), re-applies the leftovers the failed run stashed, tells the session to pick up where the last one stopped, then PR / wait / merge as usual. `-n 3` goes on to later items afterwards |
+| `--resume [BRANCH] [N\|all]` | off | A run failed and kept its work branch (`agent/...`). Continue the item instead of starting from `main`: switches to the branch (default: the one checked out, else the newest `agent/` branch), re-applies the leftovers the failed run stashed, tells the session to pick up where the last one stopped, then PR / wait / merge as usual. A count goes on to later items afterwards and includes the resumed item: `--resume all` = it, then the rest of the plan; `--resume 5` or `--resume -n 5` = it plus four more. Every failed run prints the exact command, with the branch name, in its closing box. Run it from the default branch with a clean tree; engine and model flags still apply, so a different `--model` can take over a stuck item |
 | `--small-model ID` | none | Cheap model for titles and summaries: opencode's `small_model` (inline config, `opencode.json` untouched) or Claude's haiku slot; ignored by codex (`SMALL_MODEL=`) |
-| `--rpm N` `--rpd N` `--tpm N` `--tpd N` `--itpm N` `--otpm N` | 0 = unlimited | Free endpoints cap requests and tokens per minute / day. Every request is recorded in `logs/.rate-usage`; just before one more would break a limit the session container is **paused** (`docker pause`) and resumed when the window allows, so nothing errors with a 429. Daily limits can wait for hours (Ctrl+C ends it); the ledger survives between runs. `--doctor` shows the limits and the usage recorded |
+| `--rpm N` `--rpd N` `--tpm N` `--tpd N` `--itpm N` `--otpm N` | 0 = unlimited | Free endpoints cap requests and tokens per minute / day. Every request is recorded in `logs/.rate-usage`; just before one more would break a limit the session container is **paused** (`docker pause`) and resumed when the window allows, so nothing errors with a 429. Daily limits can wait for hours (Ctrl+C ends it); the ledger survives between runs. Cached prompt tokens (read and write) count as input, because providers meter the whole prompt; `--no-rate-cache` (`RATE_CACHE=0`) ignores them where cache reads are free, e.g. Anthropic's ITPM. `--doctor` shows the limits and the usage recorded |
 | `--set KEY=VALUE` | | Any setting from the list below, repeatable: `--set VERIFY_CMD="make test" --set WATCH_MIN=10` |
-| `--X` / `--no-X` pairs | | `--learn`, `--discover`, `--graph`, `--graph-context`, `--git-guard`, `--headroom`, `--wait`, `--notify`, `--auto-replan`, `--ambitious` each have an on and an off form, so a flag can undo `.agentloop.local` in either direction. Also `--graph-budget N`, `--base-branch NAME` |
+| `--X` / `--no-X` pairs | | `--learn`, `--discover`, `--graph`, `--graph-context`, `--git-guard`, `--headroom`, `--wait`, `--notify`, `--auto-replan`, `--ambitious`, `--rate-cache` each have an on and an off form, so a flag can undo `.agentloop.local` in either direction. Also `--graph-budget N`, `--base-branch NAME` |
 
 **Per-machine defaults without touching git:** put `KEY=VALUE` lines in
 `.agentloop.local` (gitignored, created by you). Supported keys: `ENGINE`,
@@ -1244,7 +1262,7 @@ keeps going empty is easy to spot and drop.
 `STALL_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`, `HEADROOM`, `AMBITIOUS`,
 `WAIT`, `DISCOVER`, `LEARN`, `USE_GRAPH`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
 `GIT_GUARD`, `BASE_BRANCH`, `MAX_COST`, `VERIFY_CMD`, `REVIEW_MODEL`,
-`WATCH_MIN`, `NOTIFY`, `RPM`, `RPD`, `TPM`, `TPD`, `ITPM`, `OTPM`. Booleans
+`WATCH_MIN`, `NOTIFY`, `RPM`, `RPD`, `TPM`, `TPD`, `ITPM`, `OTPM`, `RATE_CACHE`. Booleans
 take 1/0, true/false, yes/no or on/off. A last line without a trailing newline
 is read, one pair of surrounding quotes is stripped, and an unknown key prints
 a warning instead of being silently ignored. The same keys work on the command
