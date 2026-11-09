@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/yildirimarda/agentloop/compare/v0.18.0...v0.19.0) (2026-11-09)
+
+
+### Features
+
+* check management in github-setup, resume counts and hints, cached tokens in rate limits ([b7d4099](https://github.com/yildirimarda/agentloop/commit/b7d4099c4eadb9bfdd0fe5deeb495568cd0ac911))
+
 ## [0.18.0](https://github.com/yildirimarda/agentloop/compare/v0.17.0...v0.18.0) (2026-11-08)
 
 
