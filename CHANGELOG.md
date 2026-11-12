@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/yildirimarda/agentloop/compare/v0.19.0...v0.19.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* nudge a session that stops before commit/push/PR and clarify the PLAN tick rule ([#52](https://github.com/yildirimarda/agentloop/issues/52)) ([5da4f99](https://github.com/yildirimarda/agentloop/commit/5da4f993a2c10ede7c2199ca5e6abdffacadacb7))
+
 ## [0.19.0](https://github.com/yildirimarda/agentloop/compare/v0.18.0...v0.19.0) (2026-11-09)
 
 
