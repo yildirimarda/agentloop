@@ -360,6 +360,16 @@ case ",${FAKE_BAD_MODELS:-}," in
     exit 0 ;;
 esac
 
+if grep -q "ended before it finished" <<<"$prompt"; then   # the loop's nudge: finish the commit/push/PR
+  if [[ "${FAKE_IGNORE_NUDGE:-0}" == 1 ]]; then
+    printf '{"type":"text","part":{"text":"Shall I commit?"}}\n'; finish 100; exit 0
+  fi
+  git commit -qm "feat: finish the forgotten commit"
+  git push -q -u origin HEAD 2>/dev/null
+  gh pr create --fill --label automated >/dev/null
+  tool "gh pr create --fill"; finish 500
+  exit 0
+fi
 if grep -q "CI failed on pull request" <<<"$prompt"; then
   echo "fixed" >> ci-fix.txt
   git add ci-fix.txt && git commit -qm "fix: make CI green" && git push -q origin HEAD 2>/dev/null
@@ -419,6 +429,10 @@ case "$prompt" in
       git add .agents/skills/run-local-db/SKILL.md
     fi ;;
 esac
+if [[ "${FAKE_FORGET_COMMIT:-0}" == 1 ]]; then   # the work is done and staged, but the session stops here
+  printf '{"type":"text","part":{"text":"Done. Let me know if you would like me to commit."}}\n'
+  finish 800; exit 0
+fi
 git commit -qm "feat: work on $slug"
 tool "graphify query where does $slug go"
 [[ "${FAKE_STOP_DURING:-0}" == 1 ]] && : > logs/.stop-request   # someone runs ./run.sh --stop
@@ -470,7 +484,7 @@ PLAN
     git remote set-head origin "$base" >/dev/null 2>&1 || true
   )
   unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN \
-        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK FAKE_TOKENS_JSON
+        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK FAKE_TOKENS_JSON FAKE_FORGET_COMMIT FAKE_IGNORE_NUDGE
 }
 # outcome column of the last history row
 last_outcome() { tail -1 "$PROJ/logs/history.tsv" | cut -f5; }
@@ -1218,5 +1232,33 @@ rm -f "$FAKE_STATE/protected"
 run_sh --github-setup --list-checks
 [[ "$RC" == 1 ]] || fail "list-checks without protection must be refused"
 expect_out "no branch protection"
+
+# ── 38. A session that stops before commit/push/PR is nudged once to finish ──
+new_project nudge
+export FAKE_FORGET_COMMIT=1
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "nudge: exited $RC"
+expect_out "uncommitted changes and no PR — asking it once to finish"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 2 ]] || fail "nudge: expected exactly item + nudge sessions, got $(cat "$FAKE_STATE/engine_seq")"
+grep -q "ended before it finished" "$FAKE_STATE/prompt_2.txt" || fail "nudge: second session did not get the nudge prompt"
+grep -q "never end by asking whether you should commit" "$FAKE_STATE/prompt_1.txt" || fail "item prompt lacks the non-interactive rule"
+grep -q "Do not edit that line" "$FAKE_STATE/prompt_1.txt" || fail "item prompt lacks the clarified tick rule"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "nudge: item not ticked on main after the nudged PR merged"
+git --git-dir="$FAKE_REMOTE" log --format=%s main | grep "feat: finish the forgotten commit" >/dev/null || fail "nudge: the nudged commit did not land"
+[[ -z "$(git -C "$PROJ" status --porcelain)" ]] || fail "nudge: tree left dirty"
+# an agent that ignores the nudge is not nudged again: one retry, then the usual stop (work parked, not lost)
+new_project nudge-ignored
+export FAKE_FORGET_COMMIT=1 FAKE_IGNORE_NUDGE=1
+run_sh -n 1
+[[ "$RC" == 1 ]] || fail "ignored nudge: must stop (exit $RC)"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 2 ]] || fail "ignored nudge: expected one nudge only, got $(cat "$FAKE_STATE/engine_seq") sessions"
+expect_out "STOPPING"
+[[ -n "$(git -C "$PROJ" stash list)" ]] || fail "ignored nudge: the uncommitted work was not parked in a stash"
+# baseline: a session that finishes normally is never nudged
+new_project nudge-baseline
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "no-nudge baseline: exited $RC"
+reject_out "asking it once to finish" "a normal session must not be nudged"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 1 ]] || fail "no-nudge baseline: extra session ran"
 
 echo "loop-test OK"
