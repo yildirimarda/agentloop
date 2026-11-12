@@ -163,6 +163,12 @@ untouched: opencode gets `OPENCODE_CONFIG_CONTENT={"small_model": ...}`, claude
 - On any failure the checkout returns to `main` and the work branch is KEPT;
   the message prints the commands to inspect or delete it. Uncommitted
   leftovers are stashed, never discarded.
+- A session that does the work but stops before commit/push/PR (typically a
+  small model ending with "let me know if you'd like me to commit") leaves a
+  dirty tree and no PR. The loop asks the same engine ONCE to finish
+  (commit, push, open the PR) before parking anything; it never nudges a
+  session that already has a PR, and never twice. The item prompt also states
+  that the run is non-interactive, so asking for confirmation ends the run.
 - A CI failure is reported only after all other checks finish, with the log of
   every failed job (per platform). Runs GitHub cancels on its own are re-run
   once automatically.
