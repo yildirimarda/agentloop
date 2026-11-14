@@ -1253,6 +1253,7 @@ keeps going empty is easy to spot and drop.
 | `--resume [BRANCH] [N\|all]` | off | A run failed and kept its work branch (`agent/...`). Continue the item instead of starting from `main`: switches to the branch (default: the one checked out, else the newest `agent/` branch), re-applies the leftovers the failed run stashed, tells the session to pick up where the last one stopped, then PR / wait / merge as usual. A count goes on to later items afterwards and includes the resumed item: `--resume all` = it, then the rest of the plan; `--resume 5` or `--resume -n 5` = it plus four more. Every failed run prints the exact command, with the branch name, in its closing box. Run it from the default branch with a clean tree; engine and model flags still apply, so a different `--model` can take over a stuck item |
 | `--small-model ID` | none | Cheap model for titles and summaries: opencode's `small_model` (inline config, `opencode.json` untouched) or Claude's haiku slot; ignored by codex (`SMALL_MODEL=`) |
 | `--rpm N` `--rpd N` `--tpm N` `--tpd N` `--itpm N` `--otpm N` | 0 = unlimited | Free endpoints cap requests and tokens per minute / day. Every request is recorded in `logs/.rate-usage`; just before one more would break a limit the session container is **paused** (`docker pause`) and resumed when the window allows, so nothing errors with a 429. Daily limits can wait for hours (Ctrl+C ends it); the ledger survives between runs. Cached prompt tokens (read and write) count as input, because providers meter the whole prompt; `--no-rate-cache` (`RATE_CACHE=0`) ignores them where cache reads are free, e.g. Anthropic's ITPM. `--doctor` shows the limits and the usage recorded |
+| `--retry-errors N` `--retry-wait SECS` | 3 / 60 | A 429, 5xx or timeout that ends a session is not the end: the loop waits (doubling from `--retry-wait`, a `retry-after` header wins, max 15 min) and continues the **same task on the same branch**. `N` is a budget **per task**, restarted for every task, so a long run survives a hiccup in each of them; `0` turns it off. Auth, billing and bad-request errors are never retried. See `docs/ENGINES.md` |
 | `--set KEY=VALUE` | | Any setting from the list below, repeatable: `--set VERIFY_CMD="make test" --set WATCH_MIN=10` |
 | `--X` / `--no-X` pairs | | `--learn`, `--discover`, `--graph`, `--graph-context`, `--git-guard`, `--headroom`, `--wait`, `--notify`, `--auto-replan`, `--ambitious`, `--rate-cache` each have an on and an off form, so a flag can undo `.agentloop.local` in either direction. Also `--graph-budget N`, `--base-branch NAME` |
 
@@ -1262,7 +1263,8 @@ keeps going empty is easy to spot and drop.
 `STALL_MIN`, `MAX_GROWTH`, `IMAGE`, `AUTO_REPLAN`, `HEADROOM`, `AMBITIOUS`,
 `WAIT`, `DISCOVER`, `LEARN`, `USE_GRAPH`, `GRAPH_CONTEXT`, `GRAPH_BUDGET`,
 `GIT_GUARD`, `BASE_BRANCH`, `MAX_COST`, `VERIFY_CMD`, `REVIEW_MODEL`,
-`WATCH_MIN`, `NOTIFY`, `RPM`, `RPD`, `TPM`, `TPD`, `ITPM`, `OTPM`, `RATE_CACHE`. Booleans
+`WATCH_MIN`, `NOTIFY`, `RPM`, `RPD`, `TPM`, `TPD`, `ITPM`, `OTPM`, `RATE_CACHE`,
+`RETRY_ERR`, `RETRY_WAIT`. Booleans
 take 1/0, true/false, yes/no or on/off. A last line without a trailing newline
 is read, one pair of surrounding quotes is stripped, and an unknown key prints
 a warning instead of being silently ignored. The same keys work on the command
