@@ -407,6 +407,29 @@ if grep -q "Address the review feedback" <<<"$prompt"; then
   exit 0
 fi
 
+# FAKE_ERR_N=N: the first N sessions of EVERY task end on a provider error (429 unless FAKE_ERR_CODE)
+# — optionally after staging partial work (FAKE_ERR_DIRTY=1). A session whose prompt carries the loop's
+# "cut off by a temporary provider error" preamble and finds staged work commits, pushes and opens the PR.
+if [[ -n "${FAKE_ERR_N:-}" ]]; then
+  key="$(grep -A2 'exactly this item' <<<"$prompt" | tail -1 | tr -c 'A-Za-z0-9' '_' | cut -c1-60)"
+  f="$FAKE_STATE/err_${key:-other}"
+  left="$(cat "$f" 2>/dev/null || echo "$FAKE_ERR_N")"
+  if (( left > 0 )); then
+    echo $(( left - 1 )) > "$f"
+    if [[ "${FAKE_ERR_DIRTY:-0}" == 1 ]]; then echo partial > "partial-$seq.txt"; git add "partial-$seq.txt"; fi
+    code="${FAKE_ERR_CODE:-429}"; retry=true; [[ "$code" == 401 ]] && retry=false
+    printf '{"type":"error","error":{"name":"APIError","data":{"message":"Too Many Requests","statusCode":%s,"isRetryable":%s,"responseHeaders":{"retry-after":"7"}}}}\n' "$code" "$retry"
+    exit 1
+  fi
+  if grep -q "cut off by a temporary provider error" <<<"$prompt" && [[ -n "$(git status --porcelain)" ]]; then
+    git commit -qm "feat: finish after the provider error"
+    git push -q -u origin HEAD 2>/dev/null
+    gh pr create --fill --label automated >/dev/null
+    tool "gh pr create --fill"; finish 500
+    exit 0
+  fi
+fi
+
 branch="$(git rev-parse --abbrev-ref HEAD)"
 slug="$(echo "$branch" | tr '/' '-')"
 label="${FAKE_LABEL-automated}"
@@ -484,7 +507,8 @@ PLAN
     git remote set-head origin "$base" >/dev/null 2>&1 || true
   )
   unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN \
-        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK FAKE_TOKENS_JSON FAKE_FORGET_COMMIT FAKE_IGNORE_NUDGE
+        FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK FAKE_TOKENS_JSON FAKE_FORGET_COMMIT FAKE_IGNORE_NUDGE \
+        FAKE_ERR_N FAKE_ERR_DIRTY FAKE_ERR_CODE
 }
 # outcome column of the last history row
 last_outcome() { tail -1 "$PROJ/logs/history.tsv" | cut -f5; }
@@ -1260,5 +1284,55 @@ run_sh -n 1
 [[ "$RC" == 0 ]] || fail "no-nudge baseline: exited $RC"
 reject_out "asking it once to finish" "a normal session must not be nudged"
 [[ "$(cat "$FAKE_STATE/engine_seq")" == 1 ]] || fail "no-nudge baseline: extra session ran"
+
+# ── 39. Transient provider errors (429/5xx): wait, continue; budget is per TASK ─
+# two errors with a clean tree: the same item is redone; waits are max(retry-wait doubling, retry-after)
+new_project retry-clean
+export FAKE_ERR_N=2
+run_sh -n 1 --retry-wait 4
+[[ "$RC" == 0 ]] || fail "retry clean: exited $RC"
+expect_out "retry 1/3 for this task in 7s"   "retry clean: first wait must honour retry-after (7s > 4s)"
+expect_out "retry 2/3 for this task in 8s"   "retry clean: second wait must double (8s)"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 3 ]] || fail "retry clean: expected 3 sessions, got $(cat "$FAKE_STATE/engine_seq")"
+grep -q "cut off by a temporary provider error" "$FAKE_STATE/prompt_2.txt" || fail "retry clean: the retry prompt lacks the continue preamble"
+grep -q "exactly this item" "$FAKE_STATE/prompt_2.txt" || fail "retry clean: the retry prompt lost the task"
+grep -q "cut off by a temporary provider error" "$FAKE_STATE/prompt_1.txt" && fail "retry clean: the first prompt must not carry the preamble"
+remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "retry clean: item not ticked on main"
+# the retry budget restarts for every task: 3 errors per task, two tasks, one run
+new_project retry-per-task
+export FAKE_ERR_N=3
+run_sh -n 2 --retry-wait 1
+[[ "$RC" == 0 ]] || fail "retry per task: exited $RC"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 8 ]] || fail "retry per task: expected 4 sessions per task (8), got $(cat "$FAKE_STATE/engine_seq")"
+expect_out "retry 3/3 for this task" "retry per task: the first task must use its whole budget"
+remote_plan | grep -x -- "- \[x\] Add the second feature" >/dev/null || fail "retry per task: the second task did not get its own budget"
+# budget exhausted: one original session + 3 retries, then the usual stop
+new_project retry-exhausted
+export FAKE_ERR_N=9
+run_sh -n 1 --retry-wait 1
+[[ "$RC" == 1 ]] || fail "retry exhausted: must stop (exit $RC)"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 4 ]] || fail "retry exhausted: expected 1 + 3 sessions, got $(cat "$FAKE_STATE/engine_seq")"
+expect_out "the 3 retries for this task are used up"
+# partial work staged before the error: the retry continues it instead of starting over
+new_project retry-dirty
+export FAKE_ERR_N=1 FAKE_ERR_DIRTY=1
+run_sh -n 1 --retry-wait 1
+[[ "$RC" == 0 ]] || fail "retry dirty: exited $RC"
+git --git-dir="$FAKE_REMOTE" log --format=%s main | grep "feat: finish after the provider error" >/dev/null || fail "retry dirty: the continued commit did not land"
+git --git-dir="$FAKE_REMOTE" ls-tree -r --name-only main | grep -q '^partial-1.txt$' || fail "retry dirty: the work done before the error was lost"
+# --retry-errors 0 turns it off; auth errors are never retried
+new_project retry-off
+export FAKE_ERR_N=1
+run_sh -n 1 --retry-errors 0
+[[ "$RC" == 1 ]] || fail "retry off: must stop at the error (exit $RC)"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 1 ]] || fail "retry off: a session was retried anyway"
+new_project retry-auth
+export FAKE_ERR_N=1 FAKE_ERR_CODE=401
+run_sh -n 1 --retry-wait 1
+[[ "$RC" == 1 ]] || fail "retry auth: must stop (exit $RC)"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 1 ]] || fail "retry auth: a 401 was retried"
+run_sh --set RETRY_ERR=lots --next
+[[ "$RC" == 1 ]] || fail "RETRY_ERR=lots must be refused"
+expect_out "RETRY_ERR must be a whole number"
 
 echo "loop-test OK"

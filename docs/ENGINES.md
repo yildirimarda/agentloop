@@ -144,6 +144,33 @@ Claude's first event per message can carry a provisional `output_tokens`, so
 OTPM / TPM / TPD are conservative-low for that engine (ITPM and the request
 limits are exact).
 
+### Provider errors: retry per task
+
+Pacing prevents most 429s, not all (free endpoints throttle on their own
+terms, and 5xx/timeouts are nobody's fault). When a session's **last** event is
+a transient error that outlived the engine's own retries — HTTP 408/409/425/429,
+500/502/503/504/520-524/529, `isRetryable: true`, or a message such as "too many
+requests", "overloaded", "timed out", "cannot connect" — `run_agent` waits and
+runs the same prompt again on the same branch, prefixed with a "you were cut off,
+look at `git status`/`git log`/`git diff` and continue" note. Finished work is
+kept; a clean tree simply redoes the task.
+
+- `RETRY_ERR` (default 3, `--retry-errors N`, `0` = off) is a budget **per
+  task**: `item_begin` resets the counter, so in a 20-task run every task gets
+  its own 3 retries. Retries of CI-fix, review, verify and nudge sessions of the
+  same task draw from the same budget.
+- `RETRY_WAIT` (default 60 s, `--retry-wait SECS`) is the first wait; it doubles
+  each retry, a `retry-after` response header wins when larger, and a wait never
+  exceeds 15 minutes.
+- Not retried: 401/403 (auth), 402 and "insufficient credits", 400-class
+  errors, context-length and content-policy errors, max-turns, and any error the
+  session recovered from (events that follow it).
+- When the budget is spent the usual handling applies (fallback models, then the
+  kept branch with resume instructions).
+- Detection reads the transcript with `jq`; `--doctor` warns when it is missing.
+  opencode `error` events, claude `result` with `is_error`, and codex
+  `turn.failed`/`error` are understood.
+
 `SMALL_MODEL` reaches the engine by environment so the project files stay
 untouched: opencode gets `OPENCODE_CONFIG_CONTENT={"small_model": ...}`, claude
 `ANTHROPIC_DEFAULT_HAIKU_MODEL`; codex has no equivalent and ignores it.

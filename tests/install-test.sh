@@ -544,6 +544,36 @@ if command -v jq >/dev/null 2>&1; then
   [[ "$(printf '%s\n' "$cl" | gate_lines 0)" == "10 20"   ]] || fail "rate cache: RATE_CACHE=0 must ignore claude cache tokens"
   [[ "$(printf '%s\n' "$ol" | gate_lines 1)" == "900 0"   ]] || fail "rate cache: a total-only event must still be recorded"
   unset -f rate_record rate_hold gate_lines rate_gate
+  # Transient provider errors: which session endings are worth a retry.
+  eval "$(sed -n '/^session_transient_error()/,/^}$/p' "$TMP/proj/run.sh")"
+  mkdir -p "$TMP/ste"
+  ste() {   # LOG CONTENT → "code|message|retry-after" or "no"
+    printf '%s\n' "$1" > "$TMP/ste/log"
+    session_transient_error "$TMP/ste/log" | tr '\t' '|' || echo no
+  }
+  [[ "$(ste '{"type":"step_start"}
+{"type":"error","error":{"name":"APIError","data":{"message":"Too Many Requests","statusCode":429,"isRetryable":true,"responseHeaders":{"retry-after":"7"}}}}')" == "429|Too Many Requests|7" ]] \
+    || fail "transient: a 429 with retry-after must be retried and report the header"
+  [[ "$(ste '{"type":"error","error":{"name":"APIError","data":{"message":"Cannot connect to API","isRetryable":true}}}')" == "error|Cannot connect to API|0" ]] \
+    || fail "transient: a retryable connection error must be retried"
+  [[ "$(ste '{"type":"error","error":{"name":"UnknownError","data":{"message":"The operation timed out."}}}')" == "error|The operation timed out.|0" ]] \
+    || fail "transient: a timeout must be retried"
+  [[ "$(ste '{"type":"result","is_error":true,"result":"API Error: 529 overloaded"}')" == "error|API Error: 529 overloaded|0" ]] \
+    || fail "transient: claude's overloaded result must be retried"
+  [[ "$(ste '{"type":"error","error":{"data":{"message":"Unauthorized","statusCode":401,"isRetryable":false}}}')" == no ]] \
+    || fail "transient: an auth error must NOT be retried"
+  [[ "$(ste '{"type":"error","error":{"data":{"message":"Insufficient credits","statusCode":402}}}')" == no ]] \
+    || fail "transient: a billing error must NOT be retried"
+  [[ "$(ste '{"type":"error","error":{"data":{"message":"x","statusCode":429,"isRetryable":true}}}
+{"type":"step_finish","part":{"tokens":{"total":5}}}')" == no ]] \
+    || fail "transient: an error the session recovered from is not a reason to retry"
+  [[ "$(ste '{"type":"result","is_error":true,"result":"Reached max turns"}')" == no ]] \
+    || fail "transient: max turns is not a provider hiccup"
+  [[ "$(ste '{"type":"error","error":{"message":"push failed"}}')" == no ]] \
+    || fail "transient: an arbitrary failure must NOT be retried"
+  [[ "$(ste 'garbage
+{"type":"step_fin')" == no ]] || fail "transient: a truncated log must not match"
+  unset -f ste session_transient_error
 fi
 cd "$TMP"
 
