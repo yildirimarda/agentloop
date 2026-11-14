@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/yildirimarda/agentloop/compare/v0.19.1...v0.20.0) (2026-11-14)
+
+
+### Features
+
+* retry a task after transient provider errors (429/5xx/timeout), budgeted per task ([#55](https://github.com/yildirimarda/agentloop/issues/55)) ([94e5e1f](https://github.com/yildirimarda/agentloop/commit/94e5e1f2b00f3854b82a5b53c990a93978a3de31))
+
 ## [0.19.1](https://github.com/yildirimarda/agentloop/compare/v0.19.0...v0.19.1) (2026-11-12)
 
 
