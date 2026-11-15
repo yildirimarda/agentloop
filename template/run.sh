@@ -2514,14 +2514,24 @@ EOF
 discovery_clause() {
   (( DISCOVER )) || { echo "Do not add, remove or reword any item in PLAN.md. You may only tick your own item."; return; }
 cat <<'EOF'
-While doing this, you may discover work that the project genuinely needs and
-PLAN.md does not cover — a missing edge case, a required migration, a piece of
-error handling, a refactor a later item will depend on. Record it:
+Before you finish, run this checklist (a minute of work; it is how the plan
+stays honest — sessions that skip it leave real follow-ups unrecorded):
+
+  a. Did you leave a TODO/FIXME, a stubbed branch or a deliberately skipped
+     case in the code you touched?
+  b. Did you notice a bug, a flaky or failing test, or odd behaviour OUTSIDE
+     your item that you did not fix?
+  c. Is there an edge case, error path or platform your tests do not cover?
+  d. Does a doc, config or example now need updating, or does a later item
+     depend on a refactor you saw is needed?
+
+For every YES, record one new plan item. If all four answers are NO, add
+nothing and write "Plan additions: none" in the PR description.
 
   - Append new "- [ ]" items to the END of the milestone they belong to, or
     under "## Discovered" if you are not sure where they fit.
-  - At most 3 new items. If you found nothing, add nothing — do not pad the
-    plan to look productive.
+  - At most 3 new items. Never pad the plan to look productive, and leave out
+    what is merely nice to have.
   - Write them in the same style as existing items: concrete, independently
     testable, one pull request each.
   - APPEND ONLY. Never delete, reorder, reword or uncheck an existing item,
