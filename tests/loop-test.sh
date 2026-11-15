@@ -619,6 +619,15 @@ expect_out "the agent added to the plan:"
 expect_out "added to plan: 1 item(s)"
 run_sh --next
 expect_out "remaining: 2"
+# the prompt asks for a checklist, not an optional "you may discover"
+grep -q "run this checklist" "$FAKE_STATE/prompt_1.txt" || fail "discovery: the item prompt lacks the checklist"
+grep -q 'Plan additions: none' "$FAKE_STATE/prompt_1.txt" || fail "discovery: the checklist must have a 'none' answer"
+grep -q "you may discover" "$FAKE_STATE/prompt_1.txt" && fail "discovery: the optional wording is back"
+new_project discover-off
+run_sh -n 1 --no-discover
+[[ "$RC" == 0 ]] || fail "no-discover: exited $RC"
+grep -q "run this checklist" "$FAKE_STATE/prompt_1.txt" && fail "no-discover: the checklist must not be in the prompt"
+grep -q "Do not add, remove or reword any item in PLAN.md" "$FAKE_STATE/prompt_1.txt" || fail "no-discover: the append ban is missing"
 
 # ── 8. Growth cap ────────────────────────────────────────────────────────────
 new_project growth
