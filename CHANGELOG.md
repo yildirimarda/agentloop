@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.2](https://github.com/yildirimarda/agentloop/compare/v0.20.1...v0.20.2) (2026-11-15)
+
+
+### Bug Fixes
+
+* retry a session that ended on a length-truncated step (reasoning ate the output limit) ([#60](https://github.com/yildirimarda/agentloop/issues/60)) ([87eddea](https://github.com/yildirimarda/agentloop/commit/87eddea1516dbf63c4d4abf292019402738b332e))
+
 ## [0.20.1](https://github.com/yildirimarda/agentloop/compare/v0.20.0...v0.20.1) (2026-11-15)
 
 
