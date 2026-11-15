@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/yildirimarda/agentloop/compare/v0.20.0...v0.20.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* turn plan discovery into a mandatory checklist so small models record follow-ups ([#58](https://github.com/yildirimarda/agentloop/issues/58)) ([bfb85ad](https://github.com/yildirimarda/agentloop/commit/bfb85ad3833825aebc134dedddf01e8e9e7fbc27))
+
 ## [0.20.0](https://github.com/yildirimarda/agentloop/compare/v0.19.1...v0.20.0) (2026-11-14)
 
 
