@@ -418,6 +418,10 @@ if [[ -n "${FAKE_ERR_N:-}" ]]; then
     echo $(( left - 1 )) > "$f"
     if [[ "${FAKE_ERR_DIRTY:-0}" == 1 ]]; then echo partial > "partial-$seq.txt"; git add "partial-$seq.txt"; fi
     code="${FAKE_ERR_CODE:-429}"; retry=true; [[ "$code" == 401 ]] && retry=false
+    if [[ "$code" == length ]]; then   # the model burned its whole output limit thinking; the session just ends
+      printf '{"type":"step_finish","part":{"reason":"length","tokens":{"total":100,"input":10,"output":0,"reasoning":16384}}}\n'
+      exit 0
+    fi
     printf '{"type":"error","error":{"name":"APIError","data":{"message":"Too Many Requests","statusCode":%s,"isRetryable":%s,"responseHeaders":{"retry-after":"7"}}}}\n' "$code" "$retry"
     exit 1
   fi
@@ -1340,6 +1344,14 @@ export FAKE_ERR_N=1 FAKE_ERR_CODE=401
 run_sh -n 1 --retry-wait 1
 [[ "$RC" == 1 ]] || fail "retry auth: must stop (exit $RC)"
 [[ "$(cat "$FAKE_STATE/engine_seq")" == 1 ]] || fail "retry auth: a 401 was retried"
+# a step that ended on reason "length" (output limit eaten by reasoning) ends the session silently: retry, short wait
+new_project retry-length
+export FAKE_ERR_N=1 FAKE_ERR_CODE=length
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "retry length: exited $RC"
+expect_out "retry 1/3 for this task in 5s" "retry length: must retry after a short wait, not the provider backoff"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 2 ]] || fail "retry length: expected 2 sessions, got $(cat "$FAKE_STATE/engine_seq")"
+grep -q "ran out of output tokens" "$FAKE_STATE/prompt_2.txt" || fail "retry length: the retry prompt must tell the model to think less"
 run_sh --set RETRY_ERR=lots --next
 [[ "$RC" == 1 ]] || fail "RETRY_ERR=lots must be refused"
 expect_out "RETRY_ERR must be a whole number"

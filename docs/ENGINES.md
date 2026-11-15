@@ -162,6 +162,10 @@ kept; a clean tree simply redoes the task.
 - `RETRY_WAIT` (default 60 s, `--retry-wait SECS`) is the first wait; it doubles
   each retry, a `retry-after` response header wins when larger, and a wait never
   exceeds 15 minutes.
+- A session whose last opencode step ended with `reason: "length"` is retried
+  the same way, after only 5 s: the model spent its whole output limit
+  (typically on reasoning, `output: 0`), and without this the session would end
+  silently with no commits. The retry prompt tells it to think briefly and act.
 - Not retried: 401/403 (auth), 402 and "insufficient credits", 400-class
   errors, context-length and content-policy errors, max-turns, and any error the
   session recovered from (events that follow it).

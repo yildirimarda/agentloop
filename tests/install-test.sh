@@ -573,6 +573,13 @@ if command -v jq >/dev/null 2>&1; then
     || fail "transient: an arbitrary failure must NOT be retried"
   [[ "$(ste 'garbage
 {"type":"step_fin')" == no ]] || fail "transient: a truncated log must not match"
+  [[ "$(ste '{"type":"step_start"}
+{"type":"step_finish","part":{"reason":"length","tokens":{"output":0,"reasoning":16384}}}')" == length\|* ]] \
+    || fail "transient: a session ending on a length-truncated step must be retried"
+  [[ "$(ste '{"type":"step_finish","part":{"reason":"length","tokens":{}}}
+{"type":"step_start"}
+{"type":"step_finish","part":{"reason":"stop","tokens":{}}}')" == no ]] \
+    || fail "transient: a length step the session moved past is not a reason to retry"
   unset -f ste session_transient_error
 fi
 cd "$TMP"
