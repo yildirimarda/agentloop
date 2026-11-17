@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/yildirimarda/agentloop/compare/v0.20.2...v0.21.0) (2026-11-17)
+
+
+### Features
+
+* close the early-automerge race, carry work off merged branches, sync conflicting PRs, restore lockfile drift, prune merged local branches ([#63](https://github.com/yildirimarda/agentloop/issues/63)) ([bd875ca](https://github.com/yildirimarda/agentloop/commit/bd875ca681cdcbcf59b84746ebb41176ef2e8947))
+
 ## [0.20.2](https://github.com/yildirimarda/agentloop/compare/v0.20.1...v0.20.2) (2026-11-15)
 
 
