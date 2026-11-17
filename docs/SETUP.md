@@ -740,6 +740,53 @@ permissions**:
 Skip this and `automerge.yml` silently does nothing. Every PR just sits there
 green and unmerged, with no error anywhere — a genuinely confusing failure.
 
+### uv.lock and release-please (Python projects using uv)
+
+release-please bumps the version in `pyproject.toml` but, by default, not the
+copy of it inside `uv.lock`. After every release the next `uv run` in the
+shared checkout therefore rewrites `uv.lock` — a one-line diff
+(`name = "yourpkg"` / `version = "0.2.0"` → `"0.3.1"`) that nobody committed and
+that makes the working tree dirty. The loop restores lockfile-only drift with a
+notice instead of stopping, but the lock stays stale in the repo. Fix it at the
+source by telling release-please about the file. Three small changes:
+
+`release-please-config.json`:
+
+```json
+{
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name=='YOUR-PACKAGE-NAME')].version"
+        }
+      ]
+    }
+  }
+}
+```
+
+`.release-please-manifest.json` (the version the project is at right now):
+
+```json
+{ ".": "0.3.1" }
+```
+
+and in `.github/workflows/release.yml` replace `release-type: python` under the
+action's `with:` by
+
+```yaml
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+```
+
+Check it on the next release PR: its diff must touch `pyproject.toml`,
+`CHANGELOG.md` and `uv.lock`. `./run.sh --doctor` warns while `uv.lock` exists
+and `release.yml` does not mention it.
+
 ### 4.4 Verify
 
 The quick way — everything the loop needs, checked from inside the container

@@ -175,6 +175,49 @@ kept; a clean tree simply redoes the task.
   opencode `error` events, claude `result` with `is_error`, and codex
   `turn.failed`/`error` are understood.
 
+### Merge races, stale branches and conflicts
+
+Three things the loop now handles itself:
+
+- **The label starts the merge, so the loop owns it.** `automerge` acts the
+  moment a PR carries `automated` and CI is green. An agent that labelled its
+  PR and then kept working (fixing an import, adding a test) had its half-done
+  state merged under it. Prompts now say: open the PR unlabelled, as the last
+  act; the loop adds `automated` after the session ends (and after a review
+  session, when `--review` is set). The template `AGENTS.md` says the same (step 9, no label).
+  Existing projects keep their own copy: after updating, change step 9 there
+  (`sed -i.bak 's/gh pr create --fill --label automated/gh pr create --fill/' AGENTS.md`);
+  until then the more specific session prompt overrides it.
+- **A branch whose PR already merged.** Before a retry, a `--resume`, and after
+  every item session, `rebase_if_pr_merged` asks whether the branch's PR is
+  `MERGED` while the branch holds commits (or uncommitted changes) it did not
+  contain. If so those move — cherry-pick plus stash, no model — onto
+  `<branch>-next`, cut from the default branch, and a follow-up PR is opened
+  (not flagged `blocked`). Without this, a second PR from the same branch
+  conflicts with the squash commit of the first.
+- **A PR that falls behind or conflicts while waiting.** `wait_for_merge` reads
+  `mergeStateStatus`. `DIRTY`/`CONFLICTING`, or `BEHIND` for three polls (branch
+  protection wants it up to date), returns code 4. `sync_pr_branch` first merges
+  `origin/<base>` itself and pushes; only a real conflict starts a session, which
+  finds the merge already in progress (`prompt_conflict`: resolve, keep both
+  sides, commit, push). Budget `CI_RETRIES` per task; when spent, the run
+  stops and prints how to take over. Timeouts now say why (`mergeStateStatus`
+  and its meaning, the checks still running or failed).
+
+Housekeeping: at the start of every run `prune_merged_branches` runs
+`git fetch --prune` and deletes each local branch whose upstream is gone **and**
+whose PR is `MERGED`. GitHub removes the remote branch on merge, but the local
+copy stays, and the loop's own post-merge cleanup is skipped whenever a run
+stops between the merge and the plan accounting. Branches whose PR is not
+merged are never touched: they hold kept work.
+
+Lockfile-only dirt (`uv.lock`, `Cargo.lock`, `package-lock.json`, ...) is not
+work: tools regenerate it, and release-please bumping `pyproject.toml` without
+`uv.lock` makes the next `uv run` rewrite it. At the start of a run and after
+each item session such drift is restored with a notice instead of blocking the
+tree check. The real fix is at the source — see "uv.lock and release-please"
+in `docs/SETUP.md`.
+
 `SMALL_MODEL` reaches the engine by environment so the project files stay
 untouched: opencode gets `OPENCODE_CONFIG_CONTENT={"small_model": ...}`, claude
 `ANTHROPIC_DEFAULT_HAIKU_MODEL`; codex has no equivalent and ignores it.
