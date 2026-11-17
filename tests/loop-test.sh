@@ -184,7 +184,20 @@ merge_pr() {   # what auto-merge + delete-branch-on-merge do on GitHub
   sha="$(head_sha "$b")" || return 1
   git --git-dir="$FAKE_REMOTE" update-ref "refs/heads/${FAKE_BASE:-main}" "$sha"
   git --git-dir="$FAKE_REMOTE" update-ref -d "refs/heads/$b"
+  echo "$sha" > "$S/pr/$1/headoid"   # GitHub keeps a merged PR's head oid
   echo MERGED > "$S/pr/$1/state"
+}
+pr_oid() { cat "$S/pr/$1/headoid" 2>/dev/null || head_sha "$(cat "$S/pr/$1/branch")" || echo 0000000; }
+# FAKE_MAIN_MOVES=clean|conflict: main moved under the PR — its branch is stale (BEHIND / DIRTY)
+# until it contains main's tip again
+mss_for() {
+  local b; b="$(cat "$S/pr/$1/branch")"
+  if [[ -n "${FAKE_MAIN_MOVES:-}" ]] \
+     && ! git --git-dir="$FAKE_REMOTE" merge-base --is-ancestor "refs/heads/${FAKE_BASE:-main}" "refs/heads/$b" 2>/dev/null; then
+    if [[ "$FAKE_MAIN_MOVES" == conflict ]]; then echo DIRTY; else echo BEHIND; fi
+    return
+  fi
+  echo CLEAN
 }
 
 case "${1:-}" in
@@ -210,18 +223,24 @@ case "${1:-}" in
       view)
         shift 2
         n=""
-        case "${1:-}" in [0-9]*) n="$1"; shift ;; esac
+        case "${1:-}" in
+          [0-9]*) n="$1"; shift ;;
+          -*|"")  ;;
+          *) n="$(pr_for_branch "$1")" || exit 1; shift ;;   # gh pr view <branch>
+        esac
         if [[ -z "$n" ]]; then n="$(pr_for_branch "$(cur_branch)")" || exit 1; fi
         [[ -d "$S/pr/$n" ]] || exit 1
         b="$(cat "$S/pr/$n/branch")"
         case "$*" in
-          *state,headRefOid*)
-            st="$(cat "$S/pr/$n/state")"
-            if [[ "$st" == OPEN && "${FAKE_MERGE:-auto}" == auto ]] && ci_green "$n" \
+          *state,headRefOid,number*) echo "$(cat "$S/pr/$n/state") $(pr_oid "$n") $n" ;;
+          *state,mergeStateStatus*)
+            st="$(cat "$S/pr/$n/state")"; mss="$(mss_for "$n")"
+            if [[ "$st" == OPEN && "${FAKE_MERGE:-auto}" == auto && "$mss" == CLEAN ]] && ci_green "$n" \
                && labelled "$n" automated && ! labelled "$n" blocked && ! labelled "$n" plan; then
               merge_pr "$n"; st=MERGED
             fi
-            echo "$st $(head_sha "$b" || echo 0000000)" ;;
+            mg=MERGEABLE; [[ "$mss" == DIRTY ]] && mg=CONFLICTING
+            echo "$st $mss $mg $(pr_oid "$n")" ;;
           *headRefOid*)  head_sha "$b" ;;
           *headRefName*) echo "$b" ;;
           *"json number"*) echo "$n" ;;
@@ -370,6 +389,16 @@ if grep -q "ended before it finished" <<<"$prompt"; then   # the loop's nudge: f
   tool "gh pr create --fill"; finish 500
   exit 0
 fi
+if grep -q "IN PROGRESS in the working" <<<"$prompt"; then   # the loop's conflict prompt: resolve the running merge
+  if [[ "${FAKE_NO_RESOLVE:-0}" == 1 ]]; then tool "ls"; finish 10; exit 0; fi
+  for f in $(git diff --name-only --diff-filter=U); do
+    echo "resolved: both sides kept" > "$f"; git add "$f"
+  done
+  git commit -qm "merge: resolve conflicts with main" --no-edit
+  git push -q origin HEAD 2>/dev/null
+  tool "git push"; finish 450
+  exit 0
+fi
 if grep -q "CI failed on pull request" <<<"$prompt"; then
   echo "fixed" >> ci-fix.txt
   git add ci-fix.txt && git commit -qm "fix: make CI green" && git push -q origin HEAD 2>/dev/null
@@ -468,6 +497,21 @@ git push -q -u origin HEAD 2>/dev/null || { printf '{"type":"error","error":{"me
 if [[ -n "$label" ]]; then gh pr create --fill --label "$label" >/dev/null
 else gh pr create --fill >/dev/null; fi
 tool "gh pr create --fill"
+if [[ -n "${FAKE_MAIN_MOVES:-}" ]]; then   # main moves on while the PR waits: a clean change, or one that collides
+  mtmp="$(mktemp -d)"
+  git clone -q "$FAKE_REMOTE" "$mtmp/c" 2>/dev/null
+  ( cd "$mtmp/c" && git checkout -q "${FAKE_BASE:-main}" 2>/dev/null
+    if [[ "$FAKE_MAIN_MOVES" == conflict ]]; then echo "main's version" > "work-$slug.txt"; else echo "unrelated" > moved-on.txt; fi
+    git add -A && git -c user.email=t@t -c user.name=t commit -qm "chore: main moved on" \
+      && git push -q origin "HEAD:${FAKE_BASE:-main}" 2>/dev/null )
+  rm -rf "$mtmp"
+fi
+if [[ "${FAKE_EARLY_PR:-0}" == 1 ]]; then   # GitHub merges the PR while the session is still working
+  n_early="$(gh pr view --json number -q .number)"
+  gh pr view "$n_early" --json state,mergeStateStatus,mergeable,headRefOid >/dev/null
+  echo "late work" > "late-$slug.txt"; git add "late-$slug.txt"
+  git commit -qm "fix: late follow-up after the PR merged"
+fi
 finish 1500 0.002
 # a session killed mid-write leaves a truncated last line
 [[ "${FAKE_TRUNCATE:-0}" == 1 ]] && printf '{"type":"step_fin'
@@ -512,7 +556,7 @@ PLAN
   )
   unset FAKE_LABEL FAKE_CI FAKE_MERGE FAKE_BAD_MODELS FAKE_DISCOVER FAKE_NO_PR FAKE_MISSING_SECRETS FAKE_LEARN \
         FAKE_STOP_DURING FAKE_REVIEW_REPLY FAKE_REVIEW_BLOCK FAKE_TOKENS_JSON FAKE_FORGET_COMMIT FAKE_IGNORE_NUDGE \
-        FAKE_ERR_N FAKE_ERR_DIRTY FAKE_ERR_CODE
+        FAKE_ERR_N FAKE_ERR_DIRTY FAKE_ERR_CODE FAKE_MAIN_MOVES FAKE_EARLY_PR FAKE_NO_RESOLVE
 }
 # outcome column of the last history row
 last_outcome() { tail -1 "$PROJ/logs/history.tsv" | cut -f5; }
@@ -942,6 +986,7 @@ new_project review-merge
 export FAKE_MERGE=never
 run_sh --timeout 0
 [[ "$RC" == 1 ]] || fail "review-merge setup: expected the PR to stay open"
+expect_out "did not merge — timed out after 0m" "the stop message must say why the PR did not merge"
 export FAKE_MERGE=auto
 printf '%s\n' '@owner:' 'looks good, just add a docstring' > "$FAKE_STATE/issue_comments"
 run_sh --address-review 1
@@ -1355,5 +1400,82 @@ grep -q "ran out of output tokens" "$FAKE_STATE/prompt_2.txt" || fail "retry len
 run_sh --set RETRY_ERR=lots --next
 [[ "$RC" == 1 ]] || fail "RETRY_ERR=lots must be refused"
 expect_out "RETRY_ERR must be a whole number"
+
+# ── 40. Merge races, stale branches, conflicts, lockfile drift ───────────────
+# the item prompt keeps the agent from labelling its own PR: the label starts the merge
+new_project norace
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "norace: exited $RC"
+grep -q 'WITHOUT the "automated" label' "$FAKE_STATE/prompt_1.txt" || fail "item prompt must tell the agent to open the PR unlabelled"
+grep -q 'Open the PR as the LAST' "$FAKE_STATE/prompt_1.txt" || fail "item prompt must say the PR is the last act"
+# the PR merged under the still-working session: its later commit moves to a fresh branch and a follow-up PR
+new_project early-merge
+export FAKE_EARLY_PR=1
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "early merge: exited $RC"
+expect_out "already merged, but the branch has work it did not contain"
+expect_out "opened follow-up #2 from bash"
+git --git-dir="$FAKE_REMOTE" ls-tree -r --name-only main | grep -q '^late-agent-' || fail "early merge: the late commit never reached main"
+[[ "$(cat "$FAKE_STATE/gh/pr/2/state")" == MERGED ]] || fail "early merge: the follow-up PR did not merge"
+grep -qx blocked "$FAKE_STATE/gh/pr/2/labels" && fail "early merge: a follow-up PR must not be flagged blocked"
+[[ -z "$(git -C "$PROJ" status --porcelain)" ]] || fail "early merge: tree left dirty"
+# main moved under an open PR, no conflict: bash merges and pushes, no model involved
+new_project sync-clean
+export FAKE_MAIN_MOVES=clean
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "sync clean: exited $RC"
+expect_out "without conflicts and pushed (no agent needed)"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 1 ]] || fail "sync clean: a model session ran for a conflict-free sync"
+git --git-dir="$FAKE_REMOTE" ls-tree -r --name-only main | grep -q '^moved-on.txt$' || fail "sync clean: main lost its own change"
+# a real conflict: a session finishes the merge already in progress
+new_project sync-conflict
+export FAKE_MAIN_MOVES=conflict
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "sync conflict: exited $RC"
+expect_out "conflicts with main in:"
+[[ "$(cat "$FAKE_STATE/engine_seq")" == 2 ]] || fail "sync conflict: expected item + conflict sessions, got $(cat "$FAKE_STATE/engine_seq")"
+grep -q "merge of origin/main into this branch is IN PROGRESS" "$FAKE_STATE/prompt_2.txt" 2>/dev/null \
+  || grep -q "IN PROGRESS in the working" "$FAKE_STATE/prompt_2.txt" || fail "sync conflict: the session did not get the conflict prompt"
+grep -q "KEEP BOTH" "$FAKE_STATE/prompt_2.txt" || fail "sync conflict: the prompt must say to keep both sides"
+[[ "$(cat "$FAKE_STATE/gh/pr/1/state")" == MERGED ]] || fail "sync conflict: the PR did not merge after the resolution"
+# a session that cannot resolve it: the merge is aborted, the run stops and says why
+new_project sync-stuck
+export FAKE_MAIN_MOVES=conflict FAKE_NO_RESOLVE=1
+run_sh -n 1
+[[ "$RC" == 1 ]] || fail "sync stuck: must stop (exit $RC)"
+expect_out "is out of date with main"
+expect_out "git merge origin/main"
+[[ -n "$(git -C "$PROJ" stash list)$(git -C "$PROJ" branch --list 'agent/*')" ]] || fail "sync stuck: the work branch must be kept"
+git -C "$PROJ" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && fail "sync stuck: a half-finished merge was left behind"
+# lockfile drift is restored instead of blocking the run; other dirt still blocks
+new_project lockfile
+(cd "$PROJ" && echo v1 > uv.lock && git add uv.lock && git commit -qm "chore: add lock" && git push -q origin main 2>/dev/null && echo v2 > uv.lock)
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "lockfile drift: exited $RC"
+expect_out "restored lockfile drift (uv.lock)"
+[[ "$(git -C "$PROJ" show HEAD:uv.lock)" == v1 ]] || fail "lockfile drift: the committed lock changed"
+new_project lockfile-mixed
+(cd "$PROJ" && echo v1 > uv.lock && git add uv.lock && git commit -qm "chore: add lock" && git push -q origin main 2>/dev/null && echo v2 > uv.lock && echo x > notes.txt && git add notes.txt)
+run_sh -n 1
+[[ "$RC" == 1 ]] || fail "lockfile + other changes must still refuse to start (exit $RC)"
+expect_out "working tree is not clean"
+
+# ── 41. Housekeeping: local branches whose PR merged are deleted; unmerged ones stay
+new_project prune
+(cd "$PROJ" \
+  && git switch -q -c agent/old-merged && echo a > a.txt && git add a.txt && git commit -qm "feat: old" \
+  && git push -q -u origin HEAD 2>/dev/null && gh pr create --fill >/dev/null \
+  && git switch -q main \
+  && git switch -q -c agent/old-open && echo b > b.txt && git add b.txt && git commit -qm "feat: kept" \
+  && git push -q -u origin HEAD 2>/dev/null && gh pr create --fill >/dev/null \
+  && git switch -q main)
+echo MERGED > "$FAKE_STATE/gh/pr/1/state"
+git --git-dir="$FAKE_REMOTE" update-ref -d refs/heads/agent/old-merged
+git --git-dir="$FAKE_REMOTE" update-ref -d refs/heads/agent/old-open      # remote gone, PR still OPEN: must be kept
+run_sh -n 1
+[[ "$RC" == 0 ]] || fail "prune: exited $RC"
+expect_out "housekeeping: deleted 1 local branch(es)"
+[[ -z "$(git -C "$PROJ" branch --list agent/old-merged)" ]] || fail "prune: the branch of a merged PR was not deleted"
+[[ -n "$(git -C "$PROJ" branch --list agent/old-open)" ]] || fail "prune: a branch whose PR is not merged must be kept"
 
 echo "loop-test OK"

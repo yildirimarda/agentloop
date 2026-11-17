@@ -30,7 +30,10 @@ work you discovered along the way, open a pull request, and stop.
    merge `origin/main` into your branch. If `PLAN.md` conflicts, take main's
    version of every line except your own item's tick — never let a conflict
    resolution untick another item (its code is already merged on main).
-9. `gh pr create --fill --label automated`
+9. `gh pr create --fill` — **no label**, and nothing changed after it. The
+   loop adds `automated` itself once your session has ended: that label makes
+   GitHub merge the PR the moment CI is green, so work you kept doing after
+   labelling it would be left behind. Open the PR as the last thing you do.
 10. **STOP.** Do not wait for CI, do not merge, do not cut a release, do not
     poll the PR, do not start the next item. GitHub handles everything after
     the PR is open.
@@ -152,7 +155,7 @@ local run does not prove the other platforms are green.
 ## When you get stuck
 
 If you cannot finish the item in 3 attempts, stop pushing on it. Commit what
-you have, open the PR with the `blocked` label instead of `automated`, and
+you have, open the PR with the `blocked` label (`gh pr create --fill --label blocked`), and
 write in the description: what you tried, what happened, and what you need.
 Leave the `PLAN.md` checkbox unchecked. Then stop.
 
