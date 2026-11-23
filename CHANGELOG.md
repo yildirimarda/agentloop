@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/yildirimarda/agentloop/compare/v0.21.0...v0.21.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* tell the CI-fix agent to read the error literally, compare environments and never weaken a check ([#66](https://github.com/yildirimarda/agentloop/issues/66)) ([a2abf01](https://github.com/yildirimarda/agentloop/commit/a2abf01f8f415efdbdff72902d598486fdb78fbe))
+
 ## [0.21.0](https://github.com/yildirimarda/agentloop/compare/v0.20.2...v0.21.0) (2026-11-17)
 
 
