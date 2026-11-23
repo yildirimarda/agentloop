@@ -2470,12 +2470,12 @@ Do this:
    assumptions, or APIs newer than the minimum supported version.
 2. Fix the CODE. Never weaken, skip or delete tests to get green, and never
    make a check pass by weakening it: no swallowing an error to "tolerate" it,
-   no loosened validator or assertion, no `|| true`, no `continue-on-error`.
+   no loosened validator or assertion, no "|| true", no "continue-on-error".
    If your fix leaves the SAME error, your diagnosis was wrong: revert the
    attempts that did not change it and re-read the log from the first error
    instead of stacking more changes. Stuck, or the only way to green is
    weakening a check? Leave a PR comment with the exact error, what you tried
-   and what you could not check, and add the label `blocked`. If a lockfile
+   and what you could not check, and add the label blocked. If a lockfile
    check failed, regenerate the lockfile with the project's dependency tool
    (e.g. uv lock) and commit it.
 3. Run the project's lint and test commands locally until they pass.
