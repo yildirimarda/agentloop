@@ -644,6 +644,16 @@ run_sh --ci-retries 1
 expect_out "automatic fix attempt 1/1"
 last_prompt | grep "assert 1 == 2" >/dev/null || fail "ci-fix: failing log not handed to the agent"
 last_prompt | grep "Load the skill agentloop-ci-fix" >/dev/null || fail "ci-fix: prompt does not load the ci-fix skill"
+last_prompt | grep "quote the FIRST error line word for word" >/dev/null || fail "ci-fix: prompt does not ask for the exact error line"
+last_prompt | grep "is NOT flaky" >/dev/null || fail "ci-fix: prompt does not warn that passes-locally is not flakiness"
+last_prompt | grep "make a check pass by weakening it" >/dev/null || fail "ci-fix: prompt does not forbid weakening a check"
+last_prompt | grep "leaves the SAME error" >/dev/null || fail "ci-fix: prompt does not say what an unchanged error means"
+# The prompt is an unquoted heredoc: backticks in it would run as commands and
+# vanish from the text, so the quoted words must arrive literally.
+last_prompt | grep 'no "|| true", no "continue-on-error"' >/dev/null || fail "ci-fix: prompt lost the quoted words (backticks run as commands?)"
+last_prompt | grep "add the label blocked" >/dev/null || fail "ci-fix: prompt lost the blocked label instruction"
+grep -q "Passes here, fails in CI is not" "$ROOT/template/.agents/skills/agentloop-ci-fix/SKILL.md" || fail "ci-fix skill lacks the environment-difference rule"
+grep -q "Never make a check pass by weakening it" "$ROOT/template/.agents/skills/agentloop-ci-fix/SKILL.md" || fail "ci-fix skill lacks the no-weakening rule"
 remote_plan | grep -x -- "- \[x\] Add the first feature" >/dev/null || fail "ci-fix: item not ticked after the fix merged"
 
 # ── 6. Red CI with retries exhausted → stop, branch kept ─────────────────────
